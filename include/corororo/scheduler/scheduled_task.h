@@ -9,7 +9,7 @@ namespace CoroRoro
 //
 // Forward declarations
 //
-class ISchedulableTask;
+struct ISchedulableTask;
 
 //
 // ScheduledTask

@@ -147,11 +147,11 @@ inline auto isOnWorkerThread() -> bool
 // Random
 //
 
-inline auto getRandomFloat() -> float
+inline auto getRandomFloat() -> double
 {
     static thread_local std::random_device               rd;
     static thread_local std::mt19937                     gen(rd());
-    static thread_local std::uniform_real_distribution<> dis(0.0f, 1.0f);
+    static thread_local std::uniform_real_distribution<> dis(0.0, 1.0);
     return dis(gen);
 }
 

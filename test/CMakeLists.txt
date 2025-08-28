@@ -44,3 +44,9 @@ add_executable(coro_roro_tests
 target_include_directories(coro_roro_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(coro_roro_tests PRIVATE Coro-Roro gtest gtest_main spdlog_header_only)
+
+if(MSVC)
+    target_compile_options(coro_roro_tests PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(coro_roro_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
