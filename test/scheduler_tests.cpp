@@ -320,9 +320,9 @@ TEST_F(SchedulerTest, ComplexThreadRouting)
 // Test 10: Debug Thread Affinity - Simple AsyncTask Test
 TEST_F(SchedulerTest, SimpleAsyncTaskTest)
 {
-    std::atomic<bool>            taskExecuted{ false };
+    auto mainThreadId = std::this_thread::get_id();
+
     std::atomic<std::thread::id> executionThreadId{};
-    auto                         mainThreadId = std::this_thread::get_id();
 
     // Schedule a simple AsyncTask directly
     scheduler->schedule(
@@ -338,6 +338,7 @@ TEST_F(SchedulerTest, SimpleAsyncTaskTest)
 
     // The AsyncTask should have been routed to a worker thread
     // Let's add a more detailed test to capture execution info
+    EXPECT_NE(executionThreadId.load(), mainThreadId);
 }
 
 // Test 11: Debug Thread Affinity - Direct Task Scheduling

@@ -292,18 +292,19 @@ TEST_F(SchedulerPerformanceTest, BenchmarkCancellationPerformance)
     // Schedule tasks that take some time
     for (size_t i = 0; i < numTasks; ++i)
     {
-        auto token = scheduler->scheduleDelayed(200ms,
-                                                [&tasksStarted, &tasksCompleted]() -> Task<void>
-                                                {
-                                                    tasksStarted.fetch_add(1);
+        auto token = scheduler->scheduleDelayed(
+            200ms,
+            [&tasksStarted, &tasksCompleted]() -> Task<void>
+            {
+                tasksStarted.fetch_add(1);
 
-                                                    // Use the complex parentTask for fair comparison
-                                                    auto result = co_await parentTask();
-                                                    (void)result; // Suppress unused variable warning
+                // Use the complex parentTask for fair comparison
+                auto result = co_await parentTask();
+                (void)result; // Suppress unused variable warning
 
-                                                    tasksCompleted.fetch_add(1);
-                                                    co_return;
-                                                });
+                tasksCompleted.fetch_add(1);
+                co_return;
+            });
 
         tokens.push_back(std::move(token));
     }
@@ -379,25 +380,24 @@ TEST_F(SchedulerPerformanceTest, BenchmarkIntervalTasks)
     {
         // This was the problematic test that caused segfaults
         // Schedule an interval task that runs every 25ms for 1 second
-        auto token = scheduler->scheduleInterval(25ms,
-                                                 []() -> Task<void>
-                                                 {
-                                                     taskExecutionCount.fetch_add(1);
+        auto token = scheduler->scheduleInterval(
+            25ms,
+            []() -> Task<void>
+            {
+                taskExecutionCount.fetch_add(1);
 
-                                                     // Use parentTask for realistic workload (same as other tests)
-                                                     std::ignore = co_await parentTask();
+                // Use parentTask for realistic workload (same as other tests)
+                std::ignore = co_await parentTask();
 
-                                                     co_return;
-                                                 });
+                co_return;
+            });
 
         // Run the scheduler for 500ms (less aggressive than 1 second)
-        auto endTime    = start + std::chrono::milliseconds(500);
-        int  iterations = 0;
+        auto endTime = start + std::chrono::milliseconds(500);
         while (std::chrono::steady_clock::now() < endTime)
         {
             scheduler->runExpiredTasks();
             std::this_thread::sleep_for(10ms); // Poll less aggressively
-            ++iterations;
         }
 
         // Cancel the interval task explicitly
