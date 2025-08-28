@@ -60,7 +60,7 @@ struct ConditionalTransferAwaiter final
 
     auto await_resume()
     {
-        return handle_.promise().getResult();
+        return handle_.promise().result();
     }
 };
 

@@ -22,10 +22,15 @@ namespace TestUtils
 class Watchdog
 {
 public:
+    // clang-format off
     explicit Watchdog(
         std::chrono::seconds  timeout,
-        std::function<void()> onTimeout = []()
-        { std::abort(); })
+        std::function<void()> onTimeout =
+        []()
+        {
+            std::abort();
+        })
+    // clang-format on
     : timeout_(timeout)
     , onTimeout_(onTimeout)
     , armed_(true)

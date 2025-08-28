@@ -6,13 +6,17 @@
 namespace CoroRoro
 {
 
-enum class ThreadAffinity : uint8_t
+//
+// ThreadAffinity
+//
+//   Specifies which thread a coroutine should execute on.
+//
+enum class ThreadAffinity : std::uint8_t
 {
     MainThread,
     WorkerThread,
 };
 
-// Helper to print the affinity.
 constexpr auto toString(ThreadAffinity affinity) -> std::string_view
 {
     switch (affinity)

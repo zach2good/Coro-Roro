@@ -6,14 +6,18 @@
 namespace CoroRoro
 {
 
-enum class TaskState : uint8_t
+//
+// TaskState
+//
+//   Represents the current state of a coroutine task.
+//
+enum class TaskState : std::uint8_t
 {
-    Suspended, // The task is currently suspended.
-    Done,      // The task completed successfully.
-    Failed,    // The task completed with an exception.
+    Suspended, // The task is currently suspended
+    Done,      // The task completed successfully
+    Failed,    // The task completed with an exception
 };
 
-// Helper to print the state.
 constexpr auto toString(TaskState state) -> std::string_view
 {
     switch (state)

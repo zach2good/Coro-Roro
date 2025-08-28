@@ -37,16 +37,10 @@ CPMAddPackage(
 add_executable(coro_roro_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/coroutine_task_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/thread_verifier_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_performance_tests.cpp
 )
 
 target_include_directories(coro_roro_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(coro_roro_tests PRIVATE Coro-Roro gtest gtest_main spdlog_header_only)
-
-add_executable(coro_roro_perf_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/performance_tests.cpp
-)
-
-target_include_directories(coro_roro_perf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_link_libraries(coro_roro_perf_tests PRIVATE Coro-Roro TracyClient spdlog_header_only)

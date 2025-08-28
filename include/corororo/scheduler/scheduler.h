@@ -1,0 +1,627 @@
+#pragma once
+
+#include <corororo/coroutine/task.h>
+#include <corororo/coroutine/thread_affinity.h>
+#include <corororo/coroutine/types.h>
+#include <corororo/scheduler/cancellation_token.h>
+#include <corororo/scheduler/delayed_task.h>
+#include <corororo/scheduler/forced_affinity_task.h>
+#include <corororo/scheduler/forced_thread_affinity.h>
+#include <corororo/scheduler/interval_task.h>
+#include <corororo/scheduler/schedulable_task.h>
+#include <corororo/scheduler/scheduled_task.h>
+#include <corororo/scheduler/worker_pool.h>
+#include <corororo/util/macros.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <queue>
+#include <thread>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace CoroRoro
+{
+
+//
+// Forward declarations
+//
+
+class CancellationToken;
+
+//
+// Scheduler
+//
+//   Modern coroutine scheduler that replaces CTaskManager.
+//
+//   Features:
+//   - Immediate task execution (schedule)
+//   - Interval/delayed tasks with cancellation tokens
+//   - Thread affinity control
+//   - Factory pattern for reusable interval tasks
+//   - RAII resource management
+//
+class Scheduler final
+{
+    friend class WorkerPool; // Allow WorkerPool to access private queueTask method
+
+    // Allow task wrapper classes to access private methods
+    template <typename T>
+    friend class DelayedTask;
+
+    template <typename T>
+    friend class IntervalTask;
+
+public:
+    // Type aliases for clarity
+    using milliseconds = std::chrono::milliseconds;
+    using time_point   = std::chrono::time_point<std::chrono::steady_clock>;
+    using steady_clock = std::chrono::steady_clock;
+    using TaskId       = std::uint64_t;
+
+    explicit Scheduler(size_t       numThreads             = std::max(1U, std::thread::hardware_concurrency() - 1U),
+                       milliseconds destructionGracePeriod = milliseconds(250));
+
+    ~Scheduler();
+
+    MOVE_ONLY(Scheduler);
+
+    //
+    // Immediate execution scheduling
+    //
+
+    template <typename TaskType>
+    void schedule(TaskType&& task);
+
+    template <typename TaskType>
+    void schedule(ForcedThreadAffinity affinity, TaskType&& task);
+
+    //
+    // Cancellable task scheduling
+    //
+
+    template <typename FactoryType>
+    auto scheduleInterval(milliseconds interval, FactoryType&& factory,
+                          milliseconds firstExecutionDelay = milliseconds::zero()) -> CancellationToken;
+
+    template <typename FactoryType>
+    auto scheduleInterval(ForcedThreadAffinity affinity, milliseconds interval, FactoryType&& factory,
+                          milliseconds firstExecutionDelay = milliseconds::zero()) -> CancellationToken;
+
+    template <typename TaskType>
+    auto scheduleDelayed(milliseconds delay, TaskType&& task) -> CancellationToken;
+
+    template <typename TaskType>
+    auto scheduleDelayed(ForcedThreadAffinity affinity, milliseconds delay, TaskType&& task) -> CancellationToken;
+
+    template <typename TaskType>
+    auto scheduleAt(time_point when, TaskType&& task) -> CancellationToken;
+
+    template <typename TaskType>
+    auto scheduleAt(ForcedThreadAffinity affinity, time_point when, TaskType&& task) -> CancellationToken;
+
+    //
+    // Main thread execution
+    //
+
+    auto runExpiredTasks(time_point referenceTime = steady_clock::now()) -> milliseconds;
+
+private:
+    //
+    // Helper methods
+    //
+
+    void executeOrRoute(/* ScheduledTask scheduledTask */);
+    void executeIntervalTask(/* ScheduledTask scheduledTask */);
+    void routeTask(/* ScheduledTask scheduledTask */);
+    void notifyMainThread();
+    void processTaskQueue();
+    void processExpiredTasks(time_point referenceTime);
+    void scheduleTaskAt(time_point when, std::unique_ptr<ISchedulableTask> task);
+    void addInFlightTask(TaskId taskId);
+    void removeInFlightTask(TaskId taskId);
+
+    // Cancellation management
+    bool isTaskCancelled(TaskId taskId);
+
+public:
+    // CancellationToken needs access to this
+    void cancelTask(TaskId taskId);
+
+    // WorkerPool needs access to this (used by friend class)
+    void queueTask(std::unique_ptr<ISchedulableTask> task);
+
+private:
+    // Task lifecycle management
+    std::atomic<TaskId>        nextTaskId_{ 1 };
+    std::unordered_set<TaskId> inFlightTasks_;
+    std::unordered_set<TaskId> cancelledTasks_;
+    std::mutex                 taskTrackingMutex_;
+
+    std::thread::id mainThreadId_;
+    milliseconds    destructionGracePeriod_;
+
+    // Thread pool for worker tasks
+    std::unique_ptr<WorkerPool> workerPool_;
+
+    //
+    // Timed task system
+    //
+
+    // Task wrapper classes are now in separate headers for better organization
+
+    std::priority_queue<ScheduledTask> timedTaskQueue_;
+    std::mutex                         timedTaskMutex_;
+
+    // Task queue for main thread immediate execution
+    std::queue<std::unique_ptr<ISchedulableTask>> mainThreadQueue_;
+    std::mutex                                    mainThreadMutex_;
+};
+
+//
+// Template implementations
+//
+
+template <typename TaskType>
+void Scheduler::schedule(TaskType&& task)
+{
+    if constexpr (std::is_invocable_v<TaskType>)
+    {
+        // Handle callables that return coroutines or regular functions
+        if constexpr (requires { task().resume(); })
+        {
+            // Callable returns a coroutine
+            auto coro    = task();
+            auto wrapped = std::make_unique<SchedulableTaskWrapper<decltype(coro)>>(std::move(coro));
+            queueTask(std::move(wrapped));
+        }
+        else
+        {
+            // Regular callable - create a simple wrapper coroutine
+            auto coro = [task = std::forward<TaskType>(task)]() mutable -> Task<void>
+            {
+                task();
+                co_return;
+            }();
+            auto wrapped = std::make_unique<SchedulableTaskWrapper<decltype(coro)>>(std::move(coro));
+            queueTask(std::move(wrapped));
+        }
+    }
+    else
+    {
+        // Direct coroutine object
+        if constexpr (requires { task.resume(); })
+        {
+            auto wrapped = std::make_unique<SchedulableTaskWrapper<TaskType>>(std::forward<TaskType>(task));
+            queueTask(std::move(wrapped));
+        }
+    }
+}
+
+template <typename TaskType>
+void Scheduler::schedule(ForcedThreadAffinity affinity, TaskType&& task)
+{
+    // Convert ForcedThreadAffinity to ThreadAffinity
+    ThreadAffinity targetAffinity = (affinity == ForcedThreadAffinity::MainThread)
+                                        ? ThreadAffinity::MainThread
+                                        : ThreadAffinity::WorkerThread;
+
+    // Handle callables vs direct coroutine objects
+    if constexpr (std::is_invocable_v<TaskType>)
+    {
+        // Handle callables that return coroutines or regular functions
+        if constexpr (requires { task().resume(); })
+        {
+            // Callable returns a coroutine
+            auto coro       = task();
+            auto forcedTask = std::make_unique<ForcedAffinityTask<decltype(coro)>>(
+                targetAffinity, std::move(coro));
+            queueTask(std::move(forcedTask));
+        }
+        else
+        {
+            // Regular callable - create a simple wrapper coroutine
+            auto coro = [task = std::forward<TaskType>(task)]() mutable -> Task<void>
+            {
+                task();
+                co_return;
+            }();
+            auto forcedTask = std::make_unique<ForcedAffinityTask<decltype(coro)>>(
+                targetAffinity, std::move(coro));
+            queueTask(std::move(forcedTask));
+        }
+    }
+    else
+    {
+        // Direct coroutine object
+        if constexpr (requires { task.resume(); })
+        {
+            auto forcedTask = std::make_unique<ForcedAffinityTask<TaskType>>(
+                targetAffinity, std::forward<TaskType>(task));
+            queueTask(std::move(forcedTask));
+        }
+    }
+}
+
+template <typename FactoryType>
+auto Scheduler::scheduleInterval(ForcedThreadAffinity affinity, Scheduler::milliseconds interval, FactoryType&& factory,
+                                 Scheduler::milliseconds firstExecutionDelay) -> CancellationToken
+{
+    // TODO: Implement forced affinity interval scheduling
+    std::ignore = affinity;
+    std::ignore = interval;
+    std::ignore = factory;
+    std::ignore = firstExecutionDelay;
+    return CancellationToken{ this, 0 };
+}
+
+template <typename TaskType>
+auto Scheduler::scheduleDelayed(Scheduler::milliseconds delay, TaskType&& task) -> CancellationToken
+{
+    // Generate unique task ID
+    TaskId taskId = nextTaskId_.fetch_add(1);
+
+    // Add to in-flight tasks
+    addInFlightTask(taskId);
+
+    // Handle callables vs direct coroutine objects
+    if constexpr (std::is_invocable_v<TaskType>)
+    {
+        // Callable that returns a coroutine or regular function
+        if constexpr (requires { task().resume(); })
+        {
+            // Callable returns a coroutine
+            auto coro        = task();
+            auto delayedTask = std::make_unique<DelayedTask<decltype(coro)>>(
+                *this, taskId, std::move(coro));
+
+            // Schedule for delayed execution
+            auto executionTime = steady_clock::now() + delay;
+            scheduleTaskAt(executionTime, std::move(delayedTask));
+        }
+        else
+        {
+            // Regular callable - wrap in Task<void>
+            auto coro = [task = std::forward<TaskType>(task)]() mutable -> Task<void>
+            {
+                task();
+                co_return;
+            }();
+            auto delayedTask = std::make_unique<DelayedTask<decltype(coro)>>(
+                *this, taskId, std::move(coro));
+
+            // Schedule for delayed execution
+            auto executionTime = steady_clock::now() + delay;
+            scheduleTaskAt(executionTime, std::move(delayedTask));
+        }
+    }
+    else
+    {
+        // Direct coroutine object
+        auto delayedTask = std::make_unique<DelayedTask<TaskType>>(
+            *this, taskId, std::forward<TaskType>(task));
+
+        // Schedule for delayed execution
+        auto executionTime = steady_clock::now() + delay;
+        scheduleTaskAt(executionTime, std::move(delayedTask));
+    }
+
+    // Return cancellation token
+    return CancellationToken{ this, taskId };
+}
+
+template <typename TaskType>
+auto Scheduler::scheduleDelayed(ForcedThreadAffinity affinity, Scheduler::milliseconds delay, TaskType&& task) -> CancellationToken
+{
+    // TODO: Implement forced affinity delayed scheduling
+    std::ignore = affinity;
+    std::ignore = delay;
+    std::ignore = task;
+    return CancellationToken{ this, 0 };
+}
+
+template <typename TaskType>
+auto Scheduler::scheduleAt(Scheduler::time_point when, TaskType&& task) -> CancellationToken
+{
+    // TODO: Implement absolute time scheduling
+    std::ignore = when;
+    std::ignore = task;
+    return CancellationToken{ this, 0 };
+}
+
+template <typename TaskType>
+auto Scheduler::scheduleAt(ForcedThreadAffinity affinity, Scheduler::time_point when, TaskType&& task) -> CancellationToken
+{
+    // TODO: Implement forced affinity absolute time scheduling
+    std::ignore = affinity;
+    std::ignore = when;
+    std::ignore = task;
+    return CancellationToken{ this, 0 };
+}
+
+//
+// Non-template implementations
+//
+
+inline Scheduler::Scheduler(size_t numThreads, milliseconds destructionGracePeriod)
+: mainThreadId_(std::this_thread::get_id())
+, destructionGracePeriod_(destructionGracePeriod)
+, workerPool_(std::make_unique<WorkerPool>(numThreads, *this))
+{
+}
+
+inline Scheduler::~Scheduler() = default;
+
+inline auto Scheduler::runExpiredTasks(time_point referenceTime) -> milliseconds
+{
+    auto start = steady_clock::now();
+
+    // Process expired timed tasks first
+    processExpiredTasks(referenceTime);
+
+    // Then process immediate tasks
+    processTaskQueue();
+
+    return std::chrono::duration_cast<milliseconds>(steady_clock::now() - start);
+}
+
+inline void Scheduler::executeOrRoute(/* ScheduledTask scheduledTask */)
+{
+    // TODO: Execute task or route to appropriate thread
+}
+
+inline void Scheduler::executeIntervalTask(/* ScheduledTask scheduledTask */)
+{
+    // TODO: Execute interval task (factory -> child pattern)
+}
+
+inline void Scheduler::routeTask(/* ScheduledTask scheduledTask */)
+{
+    // TODO: Route task to appropriate queue
+}
+
+inline void Scheduler::notifyMainThread()
+{
+    // TODO: Wake main thread
+}
+
+inline void Scheduler::processExpiredTasks(time_point referenceTime)
+{
+    std::vector<ScheduledTask> expiredTasks;
+
+    // Extract expired tasks
+    {
+        std::lock_guard<std::mutex> lock(timedTaskMutex_);
+        while (!timedTaskQueue_.empty() && timedTaskQueue_.top().nextExecution <= referenceTime)
+        {
+            expiredTasks.push_back(std::move(const_cast<ScheduledTask&>(timedTaskQueue_.top())));
+            timedTaskQueue_.pop();
+        }
+    }
+
+    // Execute expired tasks
+    for (auto& scheduledTask : expiredTasks)
+    {
+        try
+        {
+            TaskState state = scheduledTask.task->resume();
+
+            if (state == TaskState::Suspended)
+            {
+                // Task suspended - re-queue based on its current affinity
+                queueTask(std::move(scheduledTask.task));
+            }
+            // If completed or failed, task is destroyed automatically
+        }
+        catch (...)
+        {
+            // TODO: Add proper error handling
+        }
+    }
+}
+
+inline void Scheduler::scheduleTaskAt(time_point when, std::unique_ptr<ISchedulableTask> task)
+{
+    std::lock_guard<std::mutex> lock(timedTaskMutex_);
+    timedTaskQueue_.push({ when, std::move(task) });
+}
+
+inline bool Scheduler::isTaskCancelled(TaskId taskId)
+{
+    std::lock_guard<std::mutex> lock(taskTrackingMutex_);
+    return cancelledTasks_.find(taskId) != cancelledTasks_.end();
+}
+
+inline void Scheduler::cancelTask(TaskId taskId)
+{
+    std::lock_guard<std::mutex> lock(taskTrackingMutex_);
+
+    // Only mark as cancelled if the task is actually in-flight
+    if (inFlightTasks_.find(taskId) != inFlightTasks_.end())
+    {
+        cancelledTasks_.insert(taskId);
+    }
+    // If task is not in-flight, ignore the cancellation request
+}
+
+inline void Scheduler::addInFlightTask(TaskId taskId)
+{
+    std::lock_guard<std::mutex> lock(taskTrackingMutex_);
+    inFlightTasks_.insert(taskId);
+}
+
+inline void Scheduler::removeInFlightTask(TaskId taskId)
+{
+    std::lock_guard<std::mutex> lock(taskTrackingMutex_);
+    inFlightTasks_.erase(taskId);
+    cancelledTasks_.erase(taskId); // Clean up cancelled task tracking too
+}
+
+inline void Scheduler::queueTask(std::unique_ptr<ISchedulableTask> task)
+{
+    ThreadAffinity affinity = task->threadAffinity();
+
+    if (affinity == ThreadAffinity::MainThread)
+    {
+        std::lock_guard<std::mutex> lock(mainThreadMutex_);
+        mainThreadQueue_.emplace(std::move(task));
+    }
+    else if (affinity == ThreadAffinity::WorkerThread)
+    {
+        workerPool_->enqueueTask(std::move(task));
+    }
+    else
+    {
+        // Default to main thread for unknown affinity
+        std::lock_guard<std::mutex> lock(mainThreadMutex_);
+        mainThreadQueue_.emplace(std::move(task));
+    }
+}
+
+inline void Scheduler::processTaskQueue()
+{
+    // Process main thread tasks
+    std::queue<std::unique_ptr<ISchedulableTask>> tasksToProcess;
+
+    {
+        std::lock_guard<std::mutex> lock(mainThreadMutex_);
+        tasksToProcess.swap(mainThreadQueue_);
+    }
+
+    while (!tasksToProcess.empty())
+    {
+        auto task = std::move(tasksToProcess.front());
+        tasksToProcess.pop();
+
+        try
+        {
+            TaskState state = task->resume();
+
+            if (state == TaskState::Suspended)
+            {
+                // Task suspended - re-queue based on its current affinity
+                queueTask(std::move(task));
+            }
+            // If completed or failed, task is destroyed automatically
+        }
+        catch (...)
+        {
+            // TODO: Add proper error handling
+        }
+    }
+}
+
+template <typename FactoryType>
+auto Scheduler::scheduleInterval(milliseconds interval, FactoryType&& factory, milliseconds firstExecutionDelay) -> CancellationToken
+{
+    // Generate unique task ID
+    TaskId taskId = nextTaskId_.fetch_add(1);
+
+    // Add to in-flight tasks
+    addInFlightTask(taskId);
+
+    // Create interval task
+    auto intervalTask = std::make_unique<IntervalTask<FactoryType>>(
+        *this, taskId, interval, std::forward<FactoryType>(factory));
+
+    // Schedule first execution
+    auto firstExecution = steady_clock::now() + firstExecutionDelay;
+    scheduleTaskAt(firstExecution, std::move(intervalTask));
+
+    // Return cancellation token
+    return CancellationToken{ this, taskId };
+}
+
+//
+// CancellationToken implementation (after Scheduler is fully defined)
+//
+
+inline void CancellationToken::cancel()
+{
+    if (!scheduler_ || !isValid())
+    {
+        return; // Already cancelled or invalid
+    }
+
+    bool expectedFalse = false;
+    if (!cancelled_.compare_exchange_strong(expectedFalse, true))
+    {
+        // Double-cancellation protection (log warning as specified in design)
+        // TODO: Add proper logging framework
+        return; // Already cancelled
+    }
+    scheduler_->cancelTask(taskId_);
+}
+
+//
+// Task wrapper implementations that need complete Scheduler definition
+//
+
+template <typename TaskType>
+inline auto DelayedTask<TaskType>::resume() -> TaskState
+{
+    // Check if cancelled via scheduler's internal tracking
+    if (scheduler_.isTaskCancelled(taskId_))
+    {
+        // Remove from in-flight when cancelled
+        scheduler_.removeInFlightTask(taskId_);
+        return TaskState::Done; // Task was cancelled
+    }
+
+    // Execute the task directly
+    TaskState result = task_.resume();
+
+    // If task is done, remove from in-flight
+    if (result == TaskState::Done)
+    {
+        scheduler_.removeInFlightTask(taskId_);
+    }
+
+    return result;
+}
+
+template <typename FactoryType>
+inline auto IntervalTask<FactoryType>::resume() -> TaskState
+{
+    // Check if cancelled via scheduler's internal tracking
+    if (scheduler_.isTaskCancelled(taskId_))
+    {
+        // Remove from in-flight when cancelled
+        scheduler_.removeInFlightTask(taskId_);
+        return TaskState::Done; // Don't reschedule
+    }
+
+    // Call factory to create child task
+    auto childTask = factory_();
+    auto wrapped   = std::make_unique<SchedulableTaskWrapper<decltype(childTask)>>(std::move(childTask));
+
+    // Schedule child task immediately
+    scheduler_.queueTask(std::move(wrapped));
+
+    // Reschedule this factory task for next interval
+    auto nextTime = std::chrono::steady_clock::now() + interval_;
+    auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, FactoryType(factory_));
+    scheduler_.scheduleTaskAt(nextTime, std::move(selfCopy));
+
+    return TaskState::Done; // This factory task instance is complete
+}
+
+//
+// WorkerPool implementation that needs complete Scheduler definition
+//
+
+inline void WorkerPool::routeTaskToScheduler(std::unique_ptr<ISchedulableTask> task)
+{
+    scheduler_.queueTask(std::move(task));
+}
+
+} // namespace CoroRoro

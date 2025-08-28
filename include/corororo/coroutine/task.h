@@ -13,7 +13,11 @@
 namespace CoroRoro
 {
 
-// Specialisation for tasks that return a value.
+//
+// CoroutineTask
+//
+//   Specialisation for tasks that return a value.
+//
 template <ThreadAffinity Affinity, typename T>
 struct CoroutineTask final
 {
@@ -43,7 +47,7 @@ struct CoroutineTask final
             this->result_.template emplace<T>(value);
         }
 
-        auto getResult() -> T&
+        auto result() -> T&
         {
             if (std::holds_alternative<std::exception_ptr>(this->result_))
             {
@@ -84,14 +88,14 @@ struct CoroutineTask final
         return handle_.promise().context_->activeAffinity_;
     }
 
-    auto getResult() -> T&
+    auto result() -> T&
     {
-        return handle_.promise().getResult();
+        return handle_.promise().result();
     }
 
     auto get_result() -> T&
     {
-        return getResult();
+        return result();
     }
 
     ~CoroutineTask()
@@ -141,7 +145,7 @@ struct CoroutineTask<Affinity, void> final
         {
         }
 
-        void getResult()
+        void result()
         {
             if (exception_)
             {
@@ -181,14 +185,14 @@ struct CoroutineTask<Affinity, void> final
         return handle_.promise().context_->activeAffinity_;
     }
 
-    void getResult() const
+    void result() const
     {
-        handle_.promise().getResult();
+        handle_.promise().result();
     }
 
     void get_result() const
     {
-        getResult();
+        result();
     }
 
     ~CoroutineTask()
