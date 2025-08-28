@@ -9,3 +9,4 @@
 #include <corororo/coroutine/types.h>
 
 #include <corororo/util/macros.h>
+#include <corororo/util/run_coroutine_inline.h>
