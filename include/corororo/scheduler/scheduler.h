@@ -145,6 +145,7 @@ private:
     std::atomic<TaskId>        nextTaskId_{ 1 };
     std::unordered_set<TaskId> inFlightTasks_;
     std::unordered_set<TaskId> cancelledTasks_;
+    std::unordered_set<TaskId> activeIntervalTasks_; // Tracks interval tasks that are currently executing
     std::mutex                 taskTrackingMutex_;
 
     std::thread::id mainThreadId_;
@@ -595,24 +596,74 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
     // Check if cancelled via scheduler's internal tracking
     if (scheduler_.isTaskCancelled(taskId_))
     {
-        // Remove from in-flight when cancelled
+        // Remove from in-flight and active interval tasks when cancelled
         scheduler_.removeInFlightTask(taskId_);
+        {
+            std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
+            scheduler_.activeIntervalTasks_.erase(taskId_);
+        }
         return TaskState::Done; // Don't reschedule
     }
 
-    // Call factory to create child task
-    auto childTask = factory_();
-    auto wrapped   = std::make_unique<SchedulableTaskWrapper<decltype(childTask)>>(std::move(childTask));
+    // If we don't have a child task yet, create one and mark as active
+    if (!childTask_)
+    {
+        // Check if this interval task is already active (prevents multiple instances)
+        {
+            std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
+            if (scheduler_.activeIntervalTasks_.find(taskId_) != scheduler_.activeIntervalTasks_.end())
+            {
+                // Another instance of this interval task is already running, skip this one
+                return TaskState::Done;
+            }
+            scheduler_.activeIntervalTasks_.insert(taskId_);
+        }
+        
+        auto childTaskCoroutine = factory_();
+        childTask_ = std::make_unique<SchedulableTaskWrapper<decltype(childTaskCoroutine)>>(std::move(childTaskCoroutine));
+        childTaskStartTime_ = std::chrono::steady_clock::now();
+    }
 
-    // Schedule child task immediately
-    scheduler_.queueTask(std::move(wrapped));
+    // Execute the child task
+    if (childTask_)
+    {
+        TaskState childState = childTask_->resume();
+        
+        if (childState == TaskState::Suspended)
+        {
+            // Child task is suspended, we need to suspend too and continue later
+            return TaskState::Suspended;
+        }
+        
+        // Child task completed (either Done or Failed)
+        childTask_.reset(); // Clean up completed child task (sets to nullptr)
+        
+        // Remove from active interval tasks since we're done
+        {
+            std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
+            scheduler_.activeIntervalTasks_.erase(taskId_);
+        }
+        
+        // Calculate next execution time based on when we started the child task
+        // This maintains consistent interval timing regardless of child execution time
+        auto nextTime = childTaskStartTime_ + interval_;
+        auto now = std::chrono::steady_clock::now();
+        
+        // If we're already past the next scheduled time, schedule immediately
+        if (nextTime <= now)
+        {
+            nextTime = now;
+        }
+        
+        // Reschedule this factory task for next interval
+        auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, FactoryType(factory_));
+        scheduler_.scheduleTaskAt(nextTime, std::move(selfCopy));
+        
+        return TaskState::Done; // This factory task instance is complete
+    }
 
-    // Reschedule this factory task for next interval
-    auto nextTime = std::chrono::steady_clock::now() + interval_;
-    auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, FactoryType(factory_));
-    scheduler_.scheduleTaskAt(nextTime, std::move(selfCopy));
-
-    return TaskState::Done; // This factory task instance is complete
+    // Should never reach here
+    return TaskState::Done;
 }
 
 //

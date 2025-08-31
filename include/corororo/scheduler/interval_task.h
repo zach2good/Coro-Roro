@@ -19,8 +19,8 @@ class Scheduler;
 //
 //   Implements the factory pattern for interval tasks. The factory executes,
 //   creates a child task for immediate execution, and reschedules itself
-//   for the next interval. This allows proper coroutine suspension in child tasks
-//   while maintaining interval timing precision.
+//   for the next interval AFTER the child task completes. This prevents
+//   overlapping executions while maintaining interval timing precision.
 //
 template <typename FactoryType>
 class IntervalTask : public ISchedulableTask
@@ -34,6 +34,8 @@ public:
     , taskId_(taskId)
     , interval_(interval)
     , factory_(std::move(factory))
+    , childTask_(nullptr)
+    , childTaskStartTime_(steady_clock::now())
     {
     }
 
@@ -48,6 +50,10 @@ private:
     TaskId       taskId_;
     milliseconds interval_;
     FactoryType  factory_;
+    
+    // Child task management
+    std::unique_ptr<ISchedulableTask> childTask_;
+    steady_clock::time_point childTaskStartTime_;
 };
 
 //
@@ -57,7 +63,8 @@ private:
 template <typename FactoryType>
 inline auto IntervalTask<FactoryType>::done() const -> bool
 {
-    return true; // Always complete after one execution
+    // Task is done when not executing a child task
+    return childTask_ == nullptr;
 }
 
 template <typename FactoryType>

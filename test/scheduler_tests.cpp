@@ -375,3 +375,188 @@ TEST_F(SchedulerTest, DirectTaskScheduling)
     EXPECT_EQ(mainTaskThread.load(), mainThreadId);
     EXPECT_NE(asyncTaskThread.load(), mainThreadId);
 }
+
+// Test 12: Interval Task Sequential Execution with Long-Running Tasks
+//
+// BACKGROUND & PROBLEM:
+// This test captures and validates the fix for a critical concurrency issue discovered
+// in the FFXI server project. The issue manifested as data races in pathfinding code
+// (pathfind.cpp) where multiple zone tick tasks were executing simultaneously.
+//
+// ORIGINAL ISSUE:
+// The FFXI server uses scheduleInterval() to run zone logic every 400ms via zoneRunner()
+// coroutines. Each zone's game logic (AI pathfinding, entity updates, etc.) was intended
+// to run sequentially - one tick completing before the next begins. However, the original
+// IntervalTask implementation would reschedule the next interval BEFORE the current child
+// task completed, leading to overlapping executions when child tasks suspended (e.g.,
+// during pathfinding operations that offload to worker threads).
+//
+// DATA RACE MANIFESTATION:
+// In pathfind.cpp, this caused race conditions on shared data members like m_points
+// and m_currentPoint, where one zone tick would modify these while another was still
+// accessing them, leading to crashes and undefined behavior.
+//
+// THE FIX:
+// IntervalTask now enforces sequential execution by:
+// 1. Only rescheduling the next interval AFTER the current child task completes
+// 2. Using activeIntervalTasks_ tracking to prevent multiple instances of the same
+//    interval task from executing simultaneously
+// 3. Allowing child tasks to suspend/resume on worker threads while maintaining
+//    the guarantee that only one instance of a given interval task runs at a time
+//
+// This test verifies that even when interval tasks take longer than their interval
+// period, they execute sequentially rather than in parallel, preventing data races.
+TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
+{
+    static std::atomic<int> executionCount{ 0 };
+    static std::atomic<int> simultaneousExecutions{ 0 };
+    static std::atomic<int> maxSimultaneousExecutions{ 0 };
+    
+    executionCount.store(0);
+    simultaneousExecutions.store(0);
+    maxSimultaneousExecutions.store(0);
+
+    // Schedule interval task that takes longer than the interval to complete
+    auto token = scheduler->scheduleInterval(
+        50ms, // 50ms interval
+        []() -> Task<void>
+        {
+            // Track simultaneous executions
+            int current = simultaneousExecutions.fetch_add(1) + 1;
+            int max = maxSimultaneousExecutions.load();
+            while (current > max && !maxSimultaneousExecutions.compare_exchange_weak(max, current))
+            {
+                max = maxSimultaneousExecutions.load();
+            }
+            
+            executionCount.fetch_add(1);
+            
+            // Simulate long-running task that takes longer than interval
+            std::this_thread::sleep_for(75ms); // Longer than 50ms interval
+            
+            simultaneousExecutions.fetch_sub(1);
+            co_return;
+        });
+
+    // Run for about 300ms (should allow ~6 intervals, but only sequential execution)
+    auto startTime = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - startTime < 300ms)
+    {
+        scheduler->runExpiredTasks();
+        std::this_thread::sleep_for(10ms);
+    }
+
+    token.cancel();
+    
+    // Allow any remaining tasks to complete
+    std::this_thread::sleep_for(100ms);
+    scheduler->runExpiredTasks();
+
+    // Verify sequential execution behavior
+    int finalCount = executionCount.load();
+    int maxSimultaneous = maxSimultaneousExecutions.load();
+    
+    // Should have executed at least a few times, but not as many as if they were parallel
+    EXPECT_GT(finalCount, 1) << "Should have executed multiple times";
+    EXPECT_LT(finalCount, 6) << "Should not execute as many times as if parallel (due to long execution)";
+    
+    // Most importantly: should never have more than 1 simultaneous execution
+    EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution";
+}
+
+// Test 13: Interval Task with Suspending Coroutines
+//
+// ADVANCED SCENARIO:
+// This test specifically validates the fix for the more complex case where interval
+// tasks contain multiple suspension points (co_await operations that move work to
+// worker threads). This directly mirrors the FFXI server's zone tick pattern.
+//
+// FFXI SERVER PATTERN:
+// In the FFXI server, zoneRunner() calls CZone::ZoneServer() which in turn calls
+// entity logic that frequently suspends via co_await (e.g., pathfinding operations,
+// database queries, network I/O). Each suspension moves work to a worker thread,
+// then resumes on the main thread when complete.
+//
+// CRITICAL REQUIREMENT:
+// Even with multiple suspensions within a single zone tick, we must guarantee:
+// 1. No overlapping execution of zone ticks for the same zone
+// 2. Proper resumption on the main thread after worker thread operations
+// 3. Sequential processing even if individual ticks take longer than the interval
+//
+// This test simulates multiple AsyncTask suspensions (worker thread operations)
+// within each interval task execution and verifies that the sequential execution
+// guarantee is maintained throughout all suspension/resumption cycles.
+TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
+{
+    static std::atomic<int> executionCount{ 0 };
+    static std::atomic<int> suspensionCount{ 0 };
+    static std::atomic<int> simultaneousExecutions{ 0 };
+    static std::atomic<int> maxSimultaneousExecutions{ 0 };
+    
+    executionCount.store(0);
+    suspensionCount.store(0);
+    simultaneousExecutions.store(0);
+    maxSimultaneousExecutions.store(0);
+
+    auto token = scheduler->scheduleInterval(
+        30ms, // 30ms interval
+        []() -> Task<void>
+        {
+            // Track simultaneous executions
+            int current = simultaneousExecutions.fetch_add(1) + 1;
+            int max = maxSimultaneousExecutions.load();
+            while (current > max && !maxSimultaneousExecutions.compare_exchange_weak(max, current))
+            {
+                max = maxSimultaneousExecutions.load();
+            }
+            
+            executionCount.fetch_add(1);
+            
+            // Simulate work that suspends and resumes multiple times
+            co_await [&]() -> AsyncTask<void>
+            {
+                suspensionCount.fetch_add(1);
+                std::this_thread::sleep_for(20ms); // Work on worker thread
+                co_return;
+            }();
+            
+            co_await [&]() -> AsyncTask<void>
+            {
+                suspensionCount.fetch_add(1);
+                std::this_thread::sleep_for(15ms); // More work on worker thread
+                co_return;
+            }();
+            
+            simultaneousExecutions.fetch_sub(1);
+            co_return;
+        });
+
+    // Run for about 200ms
+    auto startTime = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - startTime < 200ms)
+    {
+        scheduler->runExpiredTasks();
+        std::this_thread::sleep_for(5ms);
+    }
+
+    token.cancel();
+    
+    // Allow any remaining tasks to complete
+    std::this_thread::sleep_for(100ms);
+    for (int i = 0; i < 10; ++i)
+    {
+        scheduler->runExpiredTasks();
+        std::this_thread::sleep_for(10ms);
+    }
+
+    int finalCount = executionCount.load();
+    int finalSuspensions = suspensionCount.load();
+    int maxSimultaneous = maxSimultaneousExecutions.load();
+    
+    // Should have executed multiple times with suspensions
+    EXPECT_GT(finalCount, 1) << "Should have executed multiple times";
+    EXPECT_EQ(finalSuspensions, finalCount * 2) << "Should have 2 suspensions per execution";
+    
+    // Most importantly: should never have more than 1 simultaneous execution
+    EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution, even with suspensions";
+}
