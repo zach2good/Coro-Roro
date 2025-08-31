@@ -374,7 +374,8 @@ auto sequentialTaskWork() -> Task<int>
 {
     // Pure main-thread work - no suspension points
     int result = 0;
-    for (int i = 0; i < 1000; ++i) {
+    for (int i = 0; i < 1000; ++i)
+    {
         result += i;
     }
     co_return result;
@@ -385,28 +386,28 @@ auto parallelTaskWork() -> AsyncTask<int>
     // Worker thread work - will suspend and resume
     std::this_thread::sleep_for(1ms);
     // Return a simple, predictable value for testing
-    co_return 100000;  // Simple constant for easy verification
+    co_return 100000; // Simple constant for easy verification
 }
 
 TEST_F(SchedulerPerformanceTest, BenchmarkIntervalTasksSequential)
 {
     // Test interval tasks that run purely sequential Task work
-    std::atomic<size_t> taskExecutionCount{ 0 };
+    std::atomic<size_t>  taskExecutionCount{ 0 };
     std::atomic<int64_t> totalWorkDone{ 0 };
 
     auto start = std::chrono::steady_clock::now();
 
     auto token = scheduler->scheduleInterval(
-        50ms,  // 50ms intervals
+        50ms, // 50ms intervals
         [&taskExecutionCount, &totalWorkDone]() -> Task<void>
         {
             taskExecutionCount.fetch_add(1);
-            
+
             // Pure sequential work - all on main thread
             auto result1 = co_await sequentialTaskWork();
             auto result2 = co_await sequentialTaskWork();
             auto result3 = co_await sequentialTaskWork();
-            
+
             totalWorkDone.fetch_add(result1 + result2 + result3);
             co_return;
         });
@@ -420,7 +421,7 @@ TEST_F(SchedulerPerformanceTest, BenchmarkIntervalTasksSequential)
     }
 
     token.cancel();
-    
+
     // Allow cleanup
     std::this_thread::sleep_for(50ms);
     scheduler->runExpiredTasks();
@@ -429,33 +430,33 @@ TEST_F(SchedulerPerformanceTest, BenchmarkIntervalTasksSequential)
 
     // Sequential execution should be predictable - roughly 300ms / 50ms = ~6 executions
     // But due to our sequential fix, if tasks take longer than interval, we get fewer
-    EXPECT_GE(taskExecutionCount.load(), 4);  // Should execute at least 4 times in 300ms
-    EXPECT_LE(taskExecutionCount.load(), 8);  // But not more than ~8 times
-    
+    EXPECT_GE(taskExecutionCount.load(), 4); // Should execute at least 4 times in 300ms
+    EXPECT_LE(taskExecutionCount.load(), 8); // But not more than ~8 times
+
     // Each execution calls sequentialTaskWork() 3 times, each returning sum(0..999) = 499500
-    auto expectedWorkPerExecution = 3 * 499500;  // 1498500 per execution
+    auto expectedWorkPerExecution = 3 * 499500;                                            // 1498500 per execution
     EXPECT_EQ(totalWorkDone.load(), taskExecutionCount.load() * expectedWorkPerExecution); // All work should complete
 }
 
 TEST_F(SchedulerPerformanceTest, BenchmarkIntervalTasksParallel)
 {
     // Test interval tasks that use AsyncTask work (parallel execution)
-    std::atomic<size_t> taskExecutionCount{ 0 };
+    std::atomic<size_t>  taskExecutionCount{ 0 };
     std::atomic<int64_t> totalWorkDone{ 0 };
 
     auto start = std::chrono::steady_clock::now();
 
     auto token = scheduler->scheduleInterval(
-        50ms,  // 50ms intervals  
+        50ms, // 50ms intervals
         [&taskExecutionCount, &totalWorkDone]() -> Task<void>
         {
             taskExecutionCount.fetch_add(1);
-            
+
             // Parallel work - suspends to worker threads
             auto result1 = co_await parallelTaskWork();
-            auto result2 = co_await parallelTaskWork(); 
+            auto result2 = co_await parallelTaskWork();
             auto result3 = co_await parallelTaskWork();
-            
+
             totalWorkDone.fetch_add(result1 + result2 + result3);
             co_return;
         });
@@ -469,7 +470,7 @@ TEST_F(SchedulerPerformanceTest, BenchmarkIntervalTasksParallel)
     }
 
     token.cancel();
-    
+
     // Allow cleanup - more time needed for worker thread tasks to complete
     // Each parallelTaskWork has 1ms sleep, so we need time for all suspended tasks to finish
     std::this_thread::sleep_for(200ms);
@@ -484,25 +485,25 @@ TEST_F(SchedulerPerformanceTest, BenchmarkIntervalTasksParallel)
     // Parallel execution should still be sequential per interval task instance
     // but the work happens on worker threads, so main thread can pick up next interval sooner
     // However, each AsyncTask has 1ms sleep, so total time per execution is ~3ms + overhead
-    EXPECT_GE(taskExecutionCount.load(), 2);  // Should execute at least 2 times in 300ms (accounting for AsyncTask delays)
-    EXPECT_LE(taskExecutionCount.load(), 8);  // But not more than ~8 times
-    
+    EXPECT_GE(taskExecutionCount.load(), 2); // Should execute at least 2 times in 300ms (accounting for AsyncTask delays)
+    EXPECT_LE(taskExecutionCount.load(), 8); // But not more than ~8 times
+
     // Verify that work was done and is consistent
     auto actualExecutions = taskExecutionCount.load();
-    auto actualTotalWork = totalWorkDone.load();
-    
+    auto actualTotalWork  = totalWorkDone.load();
+
     EXPECT_GT(actualExecutions, 0); // Should have some executions
     EXPECT_GT(actualTotalWork, 0);  // Should have done some work
-    
+
     // Each parallelTaskWork() returns 100000, so work should be a multiple of 100000
     EXPECT_EQ(actualTotalWork % 100000, 0); // Work should be consistent with our function
-    
+
     // Work should be reasonable - between 1 and 3*executions worth of calls
-    auto minExpectedWork = actualExecutions * 100000;       // At least 1 call per execution
-    auto maxExpectedWork = actualExecutions * 3 * 100000;   // At most 3 calls per execution
+    auto minExpectedWork = actualExecutions * 100000;     // At least 1 call per execution
+    auto maxExpectedWork = actualExecutions * 3 * 100000; // At most 3 calls per execution
     EXPECT_GE(actualTotalWork, minExpectedWork);
     EXPECT_LE(actualTotalWork, maxExpectedWork);
-    
+
     // The key insight: even with AsyncTask, we still have sequential execution per interval
     // The difference is that main thread is freed up while worker threads do the work
 }

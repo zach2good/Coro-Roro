@@ -142,6 +142,9 @@ public:
     // WorkerPool needs access to this (used by friend class)
     void queueTask(std::unique_ptr<ISchedulableTask> task);
 
+    // Helper method for testing - get count of in-flight tasks
+    size_t getInFlightTaskCount() const;
+
 private:
     // Task lifecycle management
     std::atomic<TaskId>        nextTaskId_{ 1 };
@@ -450,6 +453,12 @@ inline bool Scheduler::isTaskRescheduled(TaskId taskId) const
     return rescheduledTasks_.find(taskId) != rescheduledTasks_.end();
 }
 
+inline size_t Scheduler::getInFlightTaskCount() const
+{
+    std::lock_guard<std::mutex> lock(taskTrackingMutex_);
+    return inFlightTasks_.size();
+}
+
 inline void Scheduler::queueTask(std::unique_ptr<ISchedulableTask> task)
 {
     ThreadAffinity affinity = task->threadAffinity();
@@ -630,31 +639,39 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
         // Child task completed (either Done or Failed)
         childTask_.reset(); // Clean up completed child task (sets to nullptr)
 
-        // Calculate next execution time based on when we started the child task
-        // This maintains consistent interval timing regardless of child execution time
-        auto nextTime = childTaskStartTime_ + interval_;
+        // Calculate next execution time based on when the child task completed
+        // This ensures consistent intervals between task completions, not starts
         auto now = std::chrono::steady_clock::now();
-
-        // If we're already past the next scheduled time, schedule immediately
-        if (nextTime <= now)
-        {
-            nextTime = now;
+        
+        // Calculate the next execution time based on when this task was supposed to run
+        // For a 400ms interval, we want executions at 0ms, 400ms, 800ms, etc.
+        // Always use the standard interval to maintain consistent timing
+        auto nextTime = childTaskStartTime_ + interval_;
+        
+        // CRITICAL: If the next time is in the past (task took longer than interval),
+        // schedule it to run immediately to catch up
+        if (nextTime <= now) {
+            nextTime = now + std::chrono::milliseconds(1); // Schedule almost immediately
         }
 
-        // Remove from active interval tasks since we're done
+        // CRITICAL: Remove this task from activeIntervalTasks_ BEFORE creating the new instance
+        // This prevents the new instance from thinking another instance is running
         {
             std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
             scheduler_.activeIntervalTasks_.erase(taskId_);
         }
+        
+        // CRITICAL: Remove the old task from inFlightTasks_ since we're creating a new one
+        scheduler_.removeInFlightTask(taskId_);
 
         // Reschedule this factory task for next interval
         // Create a copy of the factory since the original may be in a moved-from state
         FactoryType factoryCopy = factory_;
         auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, std::move(factoryCopy));
+        
+        // CRITICAL: Add the rescheduled task to in-flight tracking
+        scheduler_.addInFlightTask(taskId_);
         scheduler_.scheduleTaskAt(nextTime, std::move(selfCopy));
-
-        // Mark this task as rescheduled so the wrapper doesn't remove the TaskId
-        scheduler_.markTaskAsRescheduled(taskId_);
 
         return TaskState::Done; // This factory task instance is complete
     }
