@@ -11,6 +11,16 @@
 using namespace std::chrono_literals;
 using namespace CoroRoro;
 
+// Simulate the FFXI server position_t struct
+struct position_t {
+    float x, y, z;
+    unsigned char moving;
+    unsigned char rotation;
+    
+    position_t(float x, float y, float z, unsigned char moving, unsigned char rotation)
+        : x(x), y(y), z(z), moving(moving), rotation(rotation) {}
+};
+
 class SchedulerTest : public ::testing::Test
 {
 protected:
@@ -790,4 +800,259 @@ TEST_F(SchedulerTest, ClockTypeComparison)
     // Verify the values make sense
     EXPECT_GT(systemMs, 1600000000000) << "system_clock should be after 2020"; // After 2020
     EXPECT_LT(steadyMs, 1000000000) << "steady_clock should be less than ~11 days"; // Less than ~11 days
+}
+
+// ============================================================================
+// TEST: Realistic FFXI Server Simulation - Memory Pressure + Complex Chains
+// PURPOSE: Reproduce the exact FFXI server issue with realistic conditions
+// BEHAVIOR: Creates a test that simulates memory pressure, complex task chains, and real-world timing
+// EXPECTATION: Should execute consistently every 400ms even under pressure
+// 
+// BACKGROUND: The FFXI server has real issues that our simple tests don't capture:
+// - Memory pressure from managing hundreds of entities
+// - Complex pathfinding and AI calculations
+// - Database operations and network I/O
+// - System-level contention that affects timing
+// ============================================================================
+TEST_F(SchedulerTest, RealisticFFXIServerSimulation)
+{
+    static std::atomic<int> executionCount{ 0 };
+    static std::atomic<int> completionCount{ 0 };
+    static std::atomic<int> memoryPressureCount{ 0 };
+    
+    executionCount.store(0);
+    completionCount.store(0);
+    memoryPressureCount.store(0);
+
+    // Simulate memory pressure by allocating/deallocating vectors
+    auto createMemoryPressure = [&]() -> Task<void> {
+        memoryPressureCount.fetch_add(1);
+        
+        // Simulate the kind of memory pressure the FFXI server experiences
+        std::vector<std::vector<int>> entityData;
+        for (int i = 0; i < 100; ++i) {
+            entityData.emplace_back(1000, i); // 1000 integers per entity
+        }
+        
+        // Simulate some work with the data
+        int sum = 0;
+        for (const auto& entity : entityData) {
+            for (int val : entity) {
+                sum += val;
+            }
+        }
+        
+        // Force some memory pressure
+        entityData.clear();
+        entityData.shrink_to_fit();
+        
+        co_return;
+    };
+
+    // Simulate the complex FFXI server task chain with real-world conditions
+    auto realisticZoneTick = [&]() -> Task<void> {
+        executionCount.fetch_add(1);
+        
+        // Level 1: Zone initialization (like CZone::ZoneServer)
+        co_await [&]() -> Task<void> {
+            // Simulate zone setup work
+            std::this_thread::sleep_for(10ms);
+            co_return;
+        }();
+        
+        // Level 2: Entity management (like CZoneEntities::ZoneServer)
+        co_await [&]() -> Task<void> {
+            // Simulate entity AI and pathfinding
+            co_await [&]() -> AsyncTask<void> {
+                // This runs on worker thread - simulate heavy AI work
+                std::this_thread::sleep_for(50ms);
+                
+                // Simulate pathfinding calculations
+                std::vector<int> path = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+                for (int i = 0; i < 1000; ++i) {
+                    std::rotate(path.begin(), path.begin() + 1, path.end());
+                }
+                
+                co_return;
+            }();
+            
+            // Simulate more entity work
+            std::this_thread::sleep_for(20ms);
+            co_return;
+        }();
+        
+        // Level 3: Memory pressure simulation
+        co_await createMemoryPressure();
+        
+        // Level 4: Final cleanup and state updates
+        co_await [&]() -> Task<void> {
+            // Simulate database updates or state persistence
+            std::this_thread::sleep_for(15ms);
+            co_return;
+        }();
+        
+        completionCount.fetch_add(1);
+        co_return;
+    };
+
+    // Schedule with 400ms interval (matching your FFXI server)
+    auto token = scheduler->scheduleInterval(400ms, std::move(realisticZoneTick));
+
+    // Run for a realistic duration - simulate your FFXI server running
+    const auto startTime = std::chrono::steady_clock::now();
+    const auto testDuration = 10s; // 10 seconds to see the pattern
+    
+    while (std::chrono::steady_clock::now() - startTime < testDuration) {
+        // Process tasks multiple times per second (like your FFXI server main loop)
+        for (int i = 0; i < 10; ++i) {
+            scheduler->runExpiredTasks();
+            std::this_thread::sleep_for(100ms); // 100ms between main loop iterations
+        }
+    }
+
+    // Cancel and allow cleanup
+    token.cancel();
+    std::this_thread::sleep_for(1s);
+    
+    // Final analysis
+    const int finalExecutions = executionCount.load();
+    const int finalCompletions = completionCount.load();
+    const int finalMemoryPressure = memoryPressureCount.load();
+    
+    // Calculate expected executions: 10 seconds / 400ms = 25 executions
+    const int expectedExecutions = 25;
+    const int tolerance = 3; // Allow some tolerance for timing variations
+    
+    // The key test: we should get close to the expected number of executions
+    EXPECT_GE(finalExecutions, expectedExecutions - tolerance) 
+        << "Should execute close to " << expectedExecutions << " times. Got: " << finalExecutions;
+    EXPECT_LE(finalExecutions, expectedExecutions + tolerance)
+        << "Should not execute significantly more than " << expectedExecutions << " times. Got: " << finalExecutions;
+    
+    // All executions should complete
+    EXPECT_EQ(finalExecutions, finalCompletions) 
+        << "All executions should complete. Executions: " << finalExecutions << ", Completions: " << finalCompletions;
+    
+    // Memory pressure should be applied
+    EXPECT_GT(finalMemoryPressure, 0) 
+        << "Memory pressure simulation should run";
+    
+    // Log the actual timing for analysis
+    std::cout << "Realistic FFXI Server Simulation Results:" << std::endl;
+    std::cout << "  Expected executions: " << expectedExecutions << std::endl;
+    std::cout << "  Actual executions: " << finalExecutions << std::endl;
+    std::cout << "  Actual completions: " << finalCompletions << std::endl;
+    std::cout << "  Memory pressure cycles: " << finalMemoryPressure << std::endl;
+    std::cout << "  Test duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(testDuration).count() << "ms" << std::endl;
+}
+
+TEST_F(SchedulerTest, AccurateFFXIServerTaskChain)
+{
+    static std::atomic<int> zoneRunnerCount{ 0 };
+    static std::atomic<int> zoneServerCount{ 0 };
+    static std::atomic<int> zoneEntitiesCount{ 0 };
+    static std::atomic<int> mobControllerCount{ 0 };
+    static std::atomic<int> pathfindCount{ 0 };
+    static std::atomic<int> navmeshCount{ 0 };
+    
+    zoneRunnerCount.store(0);
+    zoneServerCount.store(0);
+    zoneEntitiesCount.store(0);
+    mobControllerCount.store(0);
+    pathfindCount.store(0);
+    navmeshCount.store(0);
+
+    // Level 6: NavMesh::FindRandomPath (AsyncTask) - the heavy operation
+    auto navmeshFindRandomPath = [&]() -> AsyncTask<std::vector<position_t>> {
+        navmeshCount.fetch_add(1);
+        std::this_thread::sleep_for(std::chrono::microseconds(rand() % 5000)); // 0-5ms
+        std::vector<position_t> path;
+        for (int i = 0; i < 5; ++i) {
+            path.push_back({static_cast<float>(i), 0.0f, static_cast<float>(i), 0, 0});
+        }
+        co_return path;
+    };
+
+    // Level 5: CPathFind::RoamAround (Task) - calls navmesh
+    auto pathfindRoamAround = [&]() -> Task<bool> {
+        pathfindCount.fetch_add(1);
+        auto path = co_await navmeshFindRandomPath();
+        co_return !path.empty();
+    };
+
+    // Level 4: CMobController::Tick (Task) - calls pathfinding
+    auto mobControllerTick = [&]() -> Task<void> {
+        mobControllerCount.fetch_add(1);
+        bool pathFound = co_await pathfindRoamAround();
+        if (pathFound) {
+            std::this_thread::sleep_for(1ms);
+        }
+        co_return;
+    };
+
+    // Level 3: CZoneEntities::ZoneServer (Task) - iterates through mobs
+    auto zoneEntitiesZoneServer = [&]() -> Task<void> {
+        zoneEntitiesCount.fetch_add(1);
+        for (int i = 0; i < 330; ++i) { // Your logs show "Mob ticked 330 mobs"
+            co_await mobControllerTick();
+        }
+        std::this_thread::sleep_for(5ms);
+        co_return;
+    };
+
+    // Level 2: CZone::ZoneServer (Task) - calls zone entities
+    auto zoneZoneServer = [&]() -> Task<void> {
+        zoneServerCount.fetch_add(1);
+        co_await zoneEntitiesZoneServer();
+        std::this_thread::sleep_for(2ms);
+        co_return;
+    };
+
+    // Level 1: zoneRunner (Task) - the factory function
+    auto zoneRunner = [&]() -> Task<void> {
+        zoneRunnerCount.fetch_add(1);
+        co_await zoneZoneServer();
+        co_return;
+    };
+
+    auto token = scheduler->scheduleInterval(400ms, std::move(zoneRunner));
+    const auto startTime = std::chrono::steady_clock::now();
+    const auto testDuration = 5s;
+    
+    while (std::chrono::steady_clock::now() - startTime < testDuration) {
+        for (int i = 0; i < 5; ++i) {
+            scheduler->runExpiredTasks();
+            std::this_thread::sleep_for(200ms);
+        }
+    }
+
+    token.cancel();
+    std::this_thread::sleep_for(1s);
+    
+    const int finalZoneRunner = zoneRunnerCount.load();
+    const int finalZoneServer = zoneServerCount.load();
+    const int finalZoneEntities = zoneEntitiesCount.load();
+    const int finalMobController = mobControllerCount.load();
+    const int finalPathfind = pathfindCount.load();
+    const int finalNavmesh = navmeshCount.load();
+    
+    const int expectedExecutions = 12;
+    const int tolerance = 2;
+    
+    EXPECT_GE(finalZoneRunner, expectedExecutions - tolerance);
+    EXPECT_LE(finalZoneRunner, expectedExecutions + tolerance);
+    EXPECT_EQ(finalZoneRunner, finalZoneServer);
+    EXPECT_EQ(finalZoneServer, finalZoneEntities);
+    EXPECT_EQ(finalMobController, finalZoneEntities * 330);
+    EXPECT_EQ(finalPathfind, finalMobController);
+    EXPECT_EQ(finalNavmesh, finalPathfind);
+    
+    std::cout << "Accurate FFXI Server Task Chain Results:" << std::endl;
+    std::cout << "  Expected zoneRunner executions: " << expectedExecutions << std::endl;
+    std::cout << "  Actual zoneRunner executions: " << finalZoneRunner << std::endl;
+    std::cout << "  ZoneServer executions: " << finalZoneServer << std::endl;
+    std::cout << "  ZoneEntities executions: " << finalZoneEntities << std::endl;
+    std::cout << "  MobController executions: " << finalMobController << std::endl;
+    std::cout << "  Pathfind executions: " << finalPathfind << std::endl;
+    std::cout << "  Navmesh executions: " << finalNavmesh << std::endl;
 }
