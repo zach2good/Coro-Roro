@@ -379,19 +379,19 @@ TEST_F(SchedulerTest, DirectTaskScheduling)
 // Test 12: Interval Task Sequential Execution with Long-Running Tasks
 //
 // BACKGROUND & PROBLEM:
-// This test captures and validates the fix for a critical concurrency issue discovered
-// in the FFXI server project. The issue manifested as data races in pathfinding code
+// This test captures and validates the fix for a data race issue discovered
+// in the while integrating with LandSandBoat. The issue manifested in the pathfinding code
 // (pathfind.cpp) where multiple zone tick tasks were executing simultaneously.
 //
 // ORIGINAL ISSUE:
-// The FFXI server uses scheduleInterval() to run zone logic every 400ms via zoneRunner()
+// LandSandBoat uses scheduleInterval() to run zone logic every 400ms via zoneRunner()
 // coroutines. Each zone's game logic (AI pathfinding, entity updates, etc.) was intended
 // to run sequentially - one tick completing before the next begins. However, the original
 // IntervalTask implementation would reschedule the next interval BEFORE the current child
 // task completed, leading to overlapping executions when child tasks suspended (e.g.,
 // during pathfinding operations that offload to worker threads).
 //
-// DATA RACE MANIFESTATION:
+// DATA RACE:
 // In pathfind.cpp, this caused race conditions on shared data members like m_points
 // and m_currentPoint, where one zone tick would modify these while another was still
 // accessing them, leading to crashes and undefined behavior.
@@ -469,13 +469,13 @@ TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
 // ADVANCED SCENARIO:
 // This test specifically validates the fix for the more complex case where interval
 // tasks contain multiple suspension points (co_await operations that move work to
-// worker threads). This directly mirrors the FFXI server's zone tick pattern.
+// worker threads). This directly mirrors the LandSandBoat zone tick pattern.
 //
-// FFXI SERVER PATTERN:
-// In the FFXI server, zoneRunner() calls CZone::ZoneServer() which in turn calls
-// entity logic that frequently suspends via co_await (e.g., pathfinding operations,
-// database queries, network I/O). Each suspension moves work to a worker thread,
-// then resumes on the main thread when complete.
+// SERVER TICK PATTERN:
+// In LandSandBoat, zoneRunner() calls CZone::ZoneServer() which in turn calls
+// entity logic that frequently suspends via co_await-ing on AsyncTask work.
+// Each suspension moves work to a worker thread, then resumes on the main thread
+// when complete.
 //
 // CRITICAL REQUIREMENT:
 // Even with multiple suspensions within a single zone tick, we must guarantee:
@@ -561,18 +561,18 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
     EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution, even with suspensions";
 }
 
+// TEST 14:
+// This test reproduces a LandSandBoat issue where IntervalTask
+// completes but doesn't reschedule itself, leading to an empty task queue.
+//
+// The LandSandBoat tick pattern is:
+// 1. scheduleInterval calls zoneRunner (Task)
+// 2. zoneRunner calls CZone::ZoneServer (Task)
+// 3. ZoneServer calls entity AI that does co_await AsyncTask (pathfinding, etc.)
+// 4. AsyncTask completes on worker thread, resumes on main thread
+// 5. zoneRunner completes, IntervalTask should reschedule
 TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
 {
-    // This test reproduces the FFXI server issue where IntervalTask
-    // completes but doesn't reschedule itself, leading to empty task queue
-
-    // The FFXI server pattern is:
-    // 1. scheduleInterval calls zoneRunner (Task)
-    // 2. zoneRunner calls CZone::ZoneServer (Task)
-    // 3. ZoneServer calls entity AI that does co_await AsyncTask (pathfinding, etc.)
-    // 4. AsyncTask completes on worker thread, resumes on main thread
-    // 5. zoneRunner completes, IntervalTask should reschedule
-
     static std::atomic<int> preExecutionCount{ 0 };
     static std::atomic<int> asyncTaskCount{ 0 };
     static std::atomic<int> postExecutionCount{ 0 };
