@@ -630,10 +630,10 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
         // Child task completed (either Done or Failed)
         childTask_.reset(); // Clean up completed child task (sets to nullptr)
 
-        // Calculate next execution time based on the current time plus interval
-        // This ensures consistent interval timing regardless of child execution time
+        // Calculate next execution time based on when we started the child task
+        // This maintains consistent interval timing regardless of child execution time
+        auto nextTime = childTaskStartTime_ + interval_;
         auto now = std::chrono::steady_clock::now();
-        auto nextTime = now + interval_;
 
         // If we're already past the next scheduled time, schedule immediately
         if (nextTime <= now)

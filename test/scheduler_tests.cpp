@@ -119,7 +119,7 @@ TEST_F(SchedulerTest, CanScheduleAndCancelIntervalTask)
         std::this_thread::sleep_for(60ms);
     }
 
-    int countBeforeCancel = executionCount.load();
+    const int countBeforeCancel = executionCount.load();
     EXPECT_GT(countBeforeCancel, 0);
 
     // Cancel the interval task
@@ -130,7 +130,7 @@ TEST_F(SchedulerTest, CanScheduleAndCancelIntervalTask)
     scheduler->runExpiredTasks();
 
     // Allow for one more execution due to race condition (task already in queue)
-    int countAfterCancel = executionCount.load();
+    const int countAfterCancel = executionCount.load();
 
     // Wait longer and ensure no further executions
     std::this_thread::sleep_for(100ms);
@@ -149,7 +149,7 @@ TEST_F(SchedulerTest, CanScheduleAndCancelIntervalTask)
 TEST_F(SchedulerTest, CanScheduleDelayedTask)
 {
     std::atomic<bool>                      taskExecuted{ false };
-    auto                                   startTime = std::chrono::steady_clock::now();
+    const auto                             startTime = std::chrono::steady_clock::now();
     std::atomic<std::chrono::milliseconds> executionDelay{ 0ms };
 
     // Schedule task to execute after 100ms delay
@@ -184,7 +184,7 @@ TEST_F(SchedulerTest, CanScheduleDelayedTask)
 TEST_F(SchedulerTest, CanForceMainThreadExecution)
 {
     std::atomic<std::thread::id> executionThreadId{};
-    auto                         mainThreadId = std::this_thread::get_id();
+    const auto                   mainThreadId = std::this_thread::get_id();
 
     // Schedule task with forced main thread affinity
     scheduler->schedule(
@@ -286,7 +286,7 @@ TEST_F(SchedulerTest, ComplexThreadRouting)
     std::vector<std::thread::id> executionOrder;
     std::mutex                   orderMutex;
     std::atomic<bool>            testCompleted{ false };
-    auto                         mainThreadId = std::this_thread::get_id();
+    const auto                   mainThreadId = std::this_thread::get_id();
 
     // Create a complex coroutine that alternates between Task and AsyncTask
     auto complexTask = [&]() -> Task<void>
@@ -370,7 +370,7 @@ TEST_F(SchedulerTest, ComplexThreadRouting)
 //
 TEST_F(SchedulerTest, SimpleAsyncTaskTest)
 {
-    auto mainThreadId = std::this_thread::get_id();
+    const auto mainThreadId = std::this_thread::get_id();
 
     std::atomic<std::thread::id> executionThreadId{};
 
@@ -401,7 +401,7 @@ TEST_F(SchedulerTest, DirectTaskScheduling)
 {
     std::atomic<std::thread::id> mainTaskThread{};
     std::atomic<std::thread::id> asyncTaskThread{};
-    auto                         mainThreadId = std::this_thread::get_id();
+    const auto                   mainThreadId = std::this_thread::get_id();
 
     // Test Task (should run on main thread)
     auto mainTask = [&mainTaskThread]() -> Task<void>
@@ -475,7 +475,7 @@ TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
         });
 
     // Run for about 300ms (should allow ~6 intervals, but only sequential execution)
-    auto startTime = std::chrono::steady_clock::now();
+    const auto startTime = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - startTime < 300ms)
     {
         scheduler->runExpiredTasks();
@@ -489,8 +489,8 @@ TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
     scheduler->runExpiredTasks();
 
     // Verify sequential execution behavior
-    int finalCount      = executionCount.load();
-    int maxSimultaneous = maxSimultaneousExecutions.load();
+    const int finalCount      = executionCount.load();
+    const int maxSimultaneous = maxSimultaneousExecutions.load();
 
     // Should have executed at least a few times, but not as many as if they were parallel
     EXPECT_GT(finalCount, 1) << "Should have executed multiple times";
@@ -557,7 +557,7 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
         });
 
     // Run for about 200ms
-    auto startTime = std::chrono::steady_clock::now();
+    const auto startTime = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - startTime < 200ms)
     {
         scheduler->runExpiredTasks();
@@ -574,9 +574,9 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
         std::this_thread::sleep_for(10ms);
     }
 
-    int finalCount       = executionCount.load();
-    int finalSuspensions = suspensionCount.load();
-    int maxSimultaneous  = maxSimultaneousExecutions.load();
+    const int finalCount       = executionCount.load();
+    const int finalSuspensions = suspensionCount.load();
+    const int maxSimultaneous  = maxSimultaneousExecutions.load();
 
     // Should have executed multiple times with suspensions
     EXPECT_GT(finalCount, 1) << "Should have executed multiple times";
@@ -655,9 +655,9 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
         std::this_thread::sleep_for(250ms);
     }
 
-    int finalCount              = preExecutionCount.load();
-    int finalAsyncCount         = asyncTaskCount.load();
-    int finalPostExecutionCount = postExecutionCount.load();
+    const int finalCount              = preExecutionCount.load();
+    const int finalAsyncCount         = asyncTaskCount.load();
+    const int finalPostExecutionCount = postExecutionCount.load();
 
     // If we've scheduled the zoneTickFactory to run at intervals of 100ms, and
     // we are continually calling scheduler->runExpiredTasks() for 350ms, we
@@ -667,7 +667,7 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
     EXPECT_EQ(finalPostExecutionCount, 3) << "PostExecutionCount should execute 3 times. Got: " << finalPostExecutionCount;
 }
 
-// ============================================================================
+//
 // TEST: Interval Task Rescheduling When Behind Schedule
 // PURPOSE: Verify that interval tasks properly reschedule and execute when running behind
 // BEHAVIOR: Creates interval tasks that take longer than their interval, then verifies rescheduling
@@ -678,29 +678,23 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
 // 1. Detect when a task is behind schedule
 // 2. Reschedule it to run immediately
 // 3. Ensure it actually executes
-// ============================================================================
+// 
 TEST_F(SchedulerTest, IntervalTaskReschedulingWhenBehindSchedule)
 {
     static std::atomic<int> executionCount{ 0 };
-    static std::atomic<int> scheduledCount{ 0 };
     static std::atomic<int> completedCount{ 0 };
     
     executionCount.store(0);
-    scheduledCount.store(0);
     completedCount.store(0);
-    
-    std::cout << "=== Starting Interval Task Rescheduling When Behind Schedule Test ===" << std::endl;
     
     // Create an interval task that takes longer than its interval to complete
     auto longRunningTask = [&]() -> Task<void> {
-        int currentExecution = executionCount.fetch_add(1) + 1;
-        std::cout << "Interval task execution #" << currentExecution << " started" << std::endl;
+        executionCount.fetch_add(1);
         
         // Simulate work that takes longer than the interval
         // This should cause the task to run behind schedule
         std::this_thread::sleep_for(150ms); // Longer than 100ms interval
         
-        std::cout << "Interval task execution #" << currentExecution << " completed" << std::endl;
         completedCount.fetch_add(1);
         co_return;
     };
@@ -708,47 +702,15 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingWhenBehindSchedule)
     // Schedule with 100ms interval, but task takes 150ms to complete
     // This should cause the task to run behind schedule
     auto token = scheduler->scheduleInterval(100ms, std::move(longRunningTask));
-    std::cout << "Scheduled interval task with 100ms interval (task takes 150ms to complete)" << std::endl;
-    
-    // Track when tasks are scheduled vs when they actually execute
-    auto startTime = std::chrono::steady_clock::now();
     
     // Let it run for several intervals to see the rescheduling behavior
     for (int iteration = 0; iteration < 5; ++iteration)
     {
-        std::cout << "=== Iteration " << (iteration + 1) << " ===" << std::endl;
-        
-        auto beforeCount = executionCount.load();
-        auto beforeCompleted = completedCount.load();
-        
-        std::cout << "Before runExpiredTasks: executions=" << beforeCount 
-                  << ", completed=" << beforeCompleted << std::endl;
-        
         // Run expired tasks multiple times to allow for rescheduling
         for (int j = 0; j < 10; ++j)
         {
             scheduler->runExpiredTasks();
             std::this_thread::sleep_for(20ms);
-        }
-        
-        auto afterCount = executionCount.load();
-        auto afterCompleted = completedCount.load();
-        
-        std::cout << "After runExpiredTasks: executions=" << afterCount 
-                  << ", completed=" << afterCompleted << std::endl;
-        
-        // Check if we made progress
-        if (afterCount > beforeCount)
-        {
-            std::cout << "New execution started" << std::endl;
-        }
-        else if (afterCompleted > beforeCompleted)
-        {
-            std::cout << "Existing execution completed" << std::endl;
-        }
-        else
-        {
-            std::cout << "No progress made - potential rescheduling issue" << std::endl;
         }
         
         // Wait for the next expected interval
@@ -767,14 +729,8 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingWhenBehindSchedule)
     }
     
     // Final analysis
-    int finalExecutions = executionCount.load();
-    int finalCompleted = completedCount.load();
-    auto totalTime = std::chrono::steady_clock::now() - startTime;
-    
-    std::cout << "=== Final Results ===" << std::endl;
-    std::cout << "Total time: " << std::chrono::duration_cast<std::chrono::milliseconds>(totalTime).count() << "ms" << std::endl;
-    std::cout << "Total executions started: " << finalExecutions << std::endl;
-    std::cout << "Total executions completed: " << finalCompleted << std::endl;
+    const int finalExecutions = executionCount.load();
+    const int finalCompleted = completedCount.load();
     
     // Calculate expected behavior:
     // - 100ms interval over ~500ms should allow for multiple executions
@@ -784,13 +740,6 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingWhenBehindSchedule)
     EXPECT_GE(finalExecutions, 3) << "Should have started at least 3 executions due to rescheduling when behind schedule. Got: " << finalExecutions;
     EXPECT_GE(finalCompleted, 3) << "Should have completed at least 3 executions. Got: " << finalCompleted;
     EXPECT_EQ(finalExecutions, finalCompleted) << "All started executions should complete";
-    
-    // Most importantly: verify that the scheduler is actually rescheduling when behind
-    if (finalExecutions < 3)
-    {
-        std::cout << "WARNING: Scheduler appears to not be rescheduling when tasks are behind schedule!" << std::endl;
-        std::cout << "This could be the root cause of the FFXI server issue." << std::endl;
-    }
 }
 
 // ============================================================================
@@ -806,46 +755,22 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingWhenBehindSchedule)
 // ============================================================================
 TEST_F(SchedulerTest, ClockTypeComparison)
 {
-    std::cout << "=== Clock Type Comparison Test ===" << std::endl;
-    
     // Get current time using different clock types
-    auto steadyNow = std::chrono::steady_clock::now();
-    auto systemNow = std::chrono::system_clock::now();
+    const auto steadyNow = std::chrono::steady_clock::now();
+    const auto systemNow = std::chrono::system_clock::now();
     
     // Convert to milliseconds since epoch
-    auto steadyMs = std::chrono::duration_cast<std::chrono::milliseconds>(steadyNow.time_since_epoch()).count();
-    auto systemMs = std::chrono::duration_cast<std::chrono::milliseconds>(systemNow.time_since_epoch()).count();
-    
-    std::cout << "steady_clock::now().time_since_epoch(): " << steadyMs << "ms" << std::endl;
-    std::cout << "system_clock::now().time_since_epoch(): " << systemMs << "ms" << std::endl;
+    const auto steadyMs = std::chrono::duration_cast<std::chrono::milliseconds>(steadyNow.time_since_epoch()).count();
+    const auto systemMs = std::chrono::duration_cast<std::chrono::milliseconds>(systemNow.time_since_epoch()).count();
     
     // Calculate time since Unix epoch (1970)
-    auto unixEpoch = std::chrono::system_clock::from_time_t(0);
-    auto timeSince1970 = std::chrono::duration_cast<std::chrono::milliseconds>(systemNow - unixEpoch).count();
-    
-    std::cout << "Time since Unix epoch (1970): " << timeSince1970 << "ms" << std::endl;
-    
-    // Calculate time since system boot (approximate)
-    auto timeSinceBoot = steadyMs;
-    std::cout << "Time since system boot (approximate): " << timeSinceBoot << "ms" << std::endl;
-    
-    // Convert to human-readable formats
-    auto steadySeconds = steadyMs / 1000.0;
-    auto systemSeconds = systemMs / 1000.0;
-    auto unixSeconds = timeSince1970 / 1000.0;
-    auto bootSeconds = timeSinceBoot / 1000.0;
-    
-    std::cout << std::endl << "Human-readable formats:" << std::endl;
-    std::cout << "steady_clock: " << steadySeconds << " seconds" << std::endl;
-    std::cout << "system_clock: " << systemSeconds << " seconds" << std::endl;
-    std::cout << "Unix epoch: " << unixSeconds << " seconds" << std::endl;
-    std::cout << "System boot: " << bootSeconds << " seconds" << std::endl;
+    const auto unixEpoch = std::chrono::system_clock::from_time_t(0);
     
     // Convert Unix timestamp to date
-    auto unixTime = std::chrono::duration_cast<std::chrono::seconds>(systemNow - unixEpoch).count();
+    const auto unixTime = std::chrono::duration_cast<std::chrono::seconds>(systemNow - unixEpoch).count();
     
     // Use Windows-safe time functions
-    time_t rawTime = static_cast<time_t>(unixTime);
+    const time_t rawTime = static_cast<time_t>(unixTime);
     struct tm timeInfo;
     #ifdef _WIN32
         gmtime_s(&timeInfo, &rawTime);
@@ -856,18 +781,13 @@ TEST_F(SchedulerTest, ClockTypeComparison)
     char timeStr[100];
     std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S UTC", &timeInfo);
     
-    std::cout << "Current UTC time: " << timeStr << std::endl;
-    
     // The key insight: steady_clock is for relative timing, system_clock is for absolute timing
-    std::cout << std::endl << "=== KEY INSIGHT ===" << std::endl;
-    std::cout << "steady_clock::time_since_epoch() gives time since system boot (~5.6 days)" << std::endl;
-    std::cout << "system_clock::time_since_epoch() gives time since Unix epoch (1970)" << std::endl;
-    std::cout << "For logging absolute timestamps, use system_clock!" << std::endl;
-    std::cout << "For measuring intervals, use steady_clock!" << std::endl;
+    // steady_clock::time_since_epoch() gives time since system boot (~5.6 days)
+    // system_clock::time_since_epoch() gives time since Unix epoch (1970)
+    // For logging absolute timestamps, use system_clock!
+    // For measuring intervals, use steady_clock!
     
     // Verify the values make sense
     EXPECT_GT(systemMs, 1600000000000) << "system_clock should be after 2020"; // After 2020
     EXPECT_LT(steadyMs, 1000000000) << "steady_clock should be less than ~11 days"; // Less than ~11 days
-    
-    std::cout << "=== Test completed ===" << std::endl;
 }
