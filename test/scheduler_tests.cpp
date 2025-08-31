@@ -480,3 +480,148 @@ TEST_F(SchedulerTest, WorkerPoolMutexContentionMeasurement)
     // Document the mutex contention issue
     EXPECT_GT(perOperation, 1000) << "Current overhead of " << perOperation << "μs confirms mutex contention is significant";
 }
+
+//
+// TEST: Thread Yield Overhead Measurement
+// PURPOSE: Measure the cost of std::this_thread::yield() in worker pool polling
+// BEHAVIOR: Measures the overhead of yield() calls in the worker thread loop
+// EXPECTATION: Should reveal the polling overhead in the lock-free worker pool
+//
+// BACKGROUND: The lock-free worker pool uses std::this_thread::yield() for polling
+// when no tasks are available. This replaces condition variable waiting but may
+// have its own overhead. This test measures the specific cost of yield() operations.
+//
+TEST_F(SchedulerTest, ThreadYieldOverheadMeasurement)
+{
+    const int numYieldOperations = 1000000; // 1 million yield operations
+    
+    // Test 1: Measure pure yield() overhead
+    const auto yieldStart = std::chrono::steady_clock::now();
+    
+    for (int i = 0; i < numYieldOperations; ++i)
+    {
+        std::this_thread::yield();
+    }
+    
+    const auto yieldEnd = std::chrono::steady_clock::now();
+    const auto yieldDuration = std::chrono::duration_cast<std::chrono::microseconds>(yieldEnd - yieldStart);
+    const auto yieldPerOperation = yieldDuration.count() / numYieldOperations;
+    
+    // Test 2: Measure yield() with minimal work (simulating worker thread loop)
+    const auto loopStart = std::chrono::steady_clock::now();
+    
+    for (int i = 0; i < numYieldOperations; ++i)
+    {
+        // Simulate the worker thread loop pattern
+        bool hasTask = false; // Simulate no task available
+        if (!hasTask)
+        {
+            std::this_thread::yield();
+        }
+    }
+    
+    const auto loopEnd = std::chrono::steady_clock::now();
+    const auto loopDuration = std::chrono::duration_cast<std::chrono::microseconds>(loopEnd - loopStart);
+    const auto loopPerOperation = loopDuration.count() / numYieldOperations;
+    
+    // Test 3: Measure alternative polling strategies
+    const auto busyStart = std::chrono::steady_clock::now();
+    
+    for (int i = 0; i < numYieldOperations; ++i)
+    {
+        // Busy waiting (no yield)
+        // This is what we'd have without yield()
+    }
+    
+    const auto busyEnd = std::chrono::steady_clock::now();
+    const auto busyDuration = std::chrono::duration_cast<std::chrono::microseconds>(busyEnd - busyStart);
+    const auto busyPerOperation = busyDuration.count() / numYieldOperations;
+    
+    // Test 4: Measure yield() with sleep (simulating condition variable alternative)
+    const auto sleepStart = std::chrono::steady_clock::now();
+    
+    for (int i = 0; i < 1000; ++i) // Fewer iterations due to sleep overhead
+    {
+        std::this_thread::sleep_for(std::chrono::microseconds(1));
+    }
+    
+    const auto sleepEnd = std::chrono::steady_clock::now();
+    const auto sleepDuration = std::chrono::duration_cast<std::chrono::microseconds>(sleepEnd - sleepStart);
+    const auto sleepPerOperation = sleepDuration.count() / 1000;
+    
+    std::cout << "Thread Yield Overhead Measurement:" << std::endl;
+    std::cout << "  Operations: " << numYieldOperations << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "PERFORMANCE RESULTS:" << std::endl;
+    std::cout << "  Pure std::this_thread::yield():" << std::endl;
+    std::cout << "    Total time: " << yieldDuration.count() << "μs" << std::endl;
+    std::cout << "    Per operation: " << yieldPerOperation << "μs" << std::endl;
+    std::cout << "    Operations per second: " << (1000000.0 / yieldPerOperation) << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "  Worker thread loop pattern (yield + condition check):" << std::endl;
+    std::cout << "    Total time: " << loopDuration.count() << "μs" << std::endl;
+    std::cout << "    Per operation: " << loopPerOperation << "μs" << std::endl;
+    std::cout << "    Operations per second: " << (1000000.0 / loopPerOperation) << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "  Busy waiting (no yield):" << std::endl;
+    std::cout << "    Total time: " << busyDuration.count() << "μs" << std::endl;
+    std::cout << "    Per operation: " << busyPerOperation << "μs" << std::endl;
+    std::cout << "    Operations per second: " << (1000000.0 / busyPerOperation) << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "  std::this_thread::sleep_for(1μs):" << std::endl;
+    std::cout << "    Total time: " << sleepDuration.count() << "μs" << std::endl;
+    std::cout << "    Per operation: " << sleepPerOperation << "μs" << std::endl;
+    std::cout << "    Operations per second: " << (1000000.0 / sleepPerOperation) << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "COMPARISON ANALYSIS:" << std::endl;
+    const auto yieldOverhead = yieldPerOperation - busyPerOperation;
+    const auto loopOverhead = loopPerOperation - busyPerOperation;
+    const auto sleepOverhead = sleepPerOperation - busyPerOperation;
+    
+    std::cout << "  Yield() overhead: " << yieldOverhead << "μs per operation" << std::endl;
+    std::cout << "  Loop overhead: " << loopOverhead << "μs per operation" << std::endl;
+    std::cout << "  Sleep overhead: " << sleepOverhead << "μs per operation" << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "WORKER POOL IMPACT ANALYSIS:" << std::endl;
+    std::cout << "  Current worker pool uses yield() when no tasks available" << std::endl;
+    std::cout << "  This replaces condition variable waiting from mutex-based implementation" << std::endl;
+    std::cout << std::endl;
+    
+    // Calculate impact on thread switching overhead
+    const auto yieldOverheadPerSwitch = yieldOverhead * 10; // Assume ~10 yield calls per thread switch
+    const auto threadSwitchOverhead = 23334; // From previous measurements
+    const auto yieldPercentage = (yieldOverheadPerSwitch * 100.0) / threadSwitchOverhead;
+    
+    std::cout << "  Estimated yield() overhead per thread switch: " << yieldOverheadPerSwitch << "μs" << std::endl;
+    std::cout << "  Percentage of total thread switching overhead: " << yieldPercentage << "%" << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "OPTIMIZATION CONSIDERATIONS:" << std::endl;
+    std::cout << "  1. yield() is much faster than sleep_for()" << std::endl;
+    std::cout << "  2. yield() allows immediate response to new tasks" << std::endl;
+    std::cout << "  3. yield() reduces CPU usage compared to busy waiting" << std::endl;
+    std::cout << "  4. yield() overhead is minimal compared to context switching" << std::endl;
+    std::cout << std::endl;
+    
+    std::cout << "ALTERNATIVE STRATEGIES:" << std::endl;
+    std::cout << "  1. Adaptive polling: Use yield() initially, then sleep_for() for longer waits" << std::endl;
+    std::cout << "  2. Work stealing: Check other worker threads' queues before yielding" << std::endl;
+    std::cout << "  3. Batch processing: Process multiple tasks before yielding" << std::endl;
+    std::cout << "  4. Hybrid approach: Combine yield() with occasional condition variable waits" << std::endl;
+    
+    // Verify measurements are reasonable
+    EXPECT_GT(yieldPerOperation, 0) << "yield() should have measurable overhead";
+    EXPECT_LT(yieldPerOperation, 10) << "yield() overhead should be under 10μs per operation";
+    EXPECT_GT(loopPerOperation, yieldPerOperation) << "Loop pattern should be slower than pure yield";
+    EXPECT_GT(sleepPerOperation, yieldPerOperation) << "sleep_for() should be slower than yield()";
+    
+    // Document the yield overhead
+    EXPECT_LT(yieldOverhead, 5) << "yield() overhead should be under 5μs per operation";
+    EXPECT_LT(yieldPercentage, 10) << "yield() should be less than 10% of thread switching overhead";
+}

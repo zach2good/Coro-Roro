@@ -11,6 +11,8 @@
 #include <thread>
 #include <vector>
 
+#include <concurrentqueue/concurrentqueue.h>
+
 namespace CoroRoro
 {
 
@@ -21,6 +23,11 @@ class Scheduler;
 // WorkerPool
 //
 //   Manages a pool of worker threads that execute tasks with WorkerThread affinity.
+//
+//   LOCK-FREE IMPLEMENTATION:
+//   - Uses moodycamel::ConcurrentQueue for lock-free task management
+//   - Eliminates mutex contention in worker pool
+//   - This was the remaining bottleneck in thread switching overhead
 //
 class WorkerPool final
 {
@@ -49,10 +56,13 @@ private:
     std::atomic<bool>        shuttingDown_{ false };
     std::vector<std::thread> workerThreads_;
 
-    // Task queue for worker threads
-    std::queue<std::unique_ptr<ISchedulableTask>> workerThreadQueue_;
-    std::mutex                                    workerThreadMutex_;
-    std::condition_variable                       workerTaskAvailable_;
+    // LOCK-FREE TASK QUEUE: Replace std::queue + mutex with moodycamel::ConcurrentQueue
+    // This eliminates the mutex contention bottleneck in worker pool
+    moodycamel::ConcurrentQueue<std::unique_ptr<ISchedulableTask>> workerThreadQueue_;
+    
+    // Note: workerThreadMutex_ removed - no longer needed for lock-free queue
+    // Note: workerTaskAvailable_ removed - no longer needed for lock-free queue
+    // The lock-free queue handles all synchronization internally
 };
 
 //
@@ -83,8 +93,8 @@ inline void WorkerPool::shutdown()
     // Set shutdown flag
     shuttingDown_.store(true);
 
-    // Wake all worker threads
-    workerTaskAvailable_.notify_all();
+    // Note: No need to notify threads - they will check shuttingDown_ flag
+    // The lock-free queue doesn't require condition variable notifications
 
     // Join all worker threads
     for (auto& thread : workerThreads_)
@@ -98,11 +108,12 @@ inline void WorkerPool::shutdown()
 
 inline void WorkerPool::enqueueTask(std::unique_ptr<ISchedulableTask> task)
 {
-    {
-        std::lock_guard<std::mutex> lock(workerThreadMutex_);
-        workerThreadQueue_.emplace(std::move(task));
-    }
-    workerTaskAvailable_.notify_one();
+    // LOCK-FREE ENQUEUE: No mutex lock/unlock needed
+    // moodycamel::ConcurrentQueue handles all synchronization internally
+    workerThreadQueue_.enqueue(std::move(task));
+    
+    // Note: No condition variable notification needed
+    // Worker threads will poll the queue and find the task
 }
 
 inline void WorkerPool::workerThreadLoop()
@@ -111,27 +122,11 @@ inline void WorkerPool::workerThreadLoop()
     {
         std::unique_ptr<ISchedulableTask> task;
 
-        // Try to get a task from worker queue
+        // LOCK-FREE DEQUEUE: Try to get a task from worker queue
+        // No mutex lock/unlock or condition variable wait needed
+        if (workerThreadQueue_.try_dequeue(task))
         {
-            std::unique_lock<std::mutex> lock(workerThreadMutex_);
-            workerTaskAvailable_.wait(lock, [this]
-                                      { return shuttingDown_.load() || !workerThreadQueue_.empty(); });
-
-            if (shuttingDown_.load())
-            {
-                break;
-            }
-
-            if (!workerThreadQueue_.empty())
-            {
-                task = std::move(workerThreadQueue_.front());
-                workerThreadQueue_.pop();
-            }
-        }
-
-        // Execute the task if we got one
-        if (task)
-        {
+            // Execute the task if we got one
             try
             {
                 TaskState state = task->resume();
@@ -148,6 +143,12 @@ inline void WorkerPool::workerThreadLoop()
             {
                 // TODO: Add proper error handling
             }
+        }
+        else
+        {
+            // No task available - yield to other threads
+            // This replaces the condition variable wait
+            std::this_thread::yield();
         }
     }
 }
