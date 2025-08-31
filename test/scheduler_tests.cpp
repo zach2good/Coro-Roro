@@ -28,14 +28,24 @@ protected:
     std::unique_ptr<Scheduler> scheduler;
 };
 
-// Test 1: Basic Scheduler Construction and Destruction
+//
+// TEST: Basic Scheduler Construction and Destruction
+// PURPOSE: Verify that the scheduler can be created and destroyed without crashes
+// BEHAVIOR: Creates a scheduler in SetUp and destroys it in TearDown
+// EXPECTATION: No crashes or exceptions during construction/destruction
+//
 TEST_F(SchedulerTest, CanConstructAndDestruct)
 {
     // This test passes if setup/teardown works without crash
     EXPECT_TRUE(scheduler != nullptr);
 }
 
-// Test 2: Schedule a Simple Task for Immediate Execution
+//
+// TEST: Schedule a Simple Task for Immediate Execution
+// PURPOSE: Verify that basic coroutine tasks can be scheduled and executed
+// BEHAVIOR: Schedules a simple coroutine that sets an atomic flag
+// EXPECTATION: Task executes and flag is set to true
+//
 TEST_F(SchedulerTest, CanScheduleSimpleTask)
 {
     std::atomic<bool> taskExecuted{ false };
@@ -57,7 +67,12 @@ TEST_F(SchedulerTest, CanScheduleSimpleTask)
     EXPECT_TRUE(taskExecuted.load());
 }
 
-// Test 3: Schedule Task with General Callable (Non-Coroutine)
+//
+// TEST: Schedule Task with General Callable (Non-Coroutine)
+// PURPOSE: Verify that non-coroutine callables can be scheduled
+// BEHAVIOR: Schedules a regular lambda function that modifies a static counter
+// EXPECTATION: Function executes and counter is set to expected value
+//
 TEST_F(SchedulerTest, CanScheduleGeneralCallable)
 {
     // Use a simple static variable for this test to avoid capture issues
@@ -77,7 +92,12 @@ TEST_F(SchedulerTest, CanScheduleGeneralCallable)
     EXPECT_EQ(globalCounter.load(), 42);
 }
 
-// Test 4: Schedule Interval Task and Cancel It
+//
+// TEST: Schedule Interval Task and Cancel It
+// PURPOSE: Verify that interval tasks can be scheduled, executed, and cancelled
+// BEHAVIOR: Creates an interval task that runs every 50ms, then cancels it
+// EXPECTATION: Task executes multiple times before cancellation, then stops
+//
 TEST_F(SchedulerTest, CanScheduleAndCancelIntervalTask)
 {
     static std::atomic<int> executionCount{ 0 };
@@ -120,7 +140,12 @@ TEST_F(SchedulerTest, CanScheduleAndCancelIntervalTask)
     EXPECT_EQ(executionCount.load(), countAfterCancel);
 }
 
-// Test 5: Schedule Delayed Task
+//
+// TEST: Schedule Delayed Task
+// PURPOSE: Verify that tasks can be scheduled with a delay before execution
+// BEHAVIOR: Schedules a task to execute after 100ms delay
+// EXPECTATION: Task does not execute immediately, executes after delay period
+//
 TEST_F(SchedulerTest, CanScheduleDelayedTask)
 {
     std::atomic<bool>                      taskExecuted{ false };
@@ -150,7 +175,12 @@ TEST_F(SchedulerTest, CanScheduleDelayedTask)
     EXPECT_GE(executionDelay.load().count(), 95); // Allow some tolerance
 }
 
-// Test 6: Thread Affinity - Force Main Thread Execution
+//
+// TEST: Thread Affinity - Force Main Thread Execution
+// PURPOSE: Verify that tasks can be forced to execute on the main thread
+// BEHAVIOR: Schedules a task with ForcedThreadAffinity::MainThread
+// EXPECTATION: Task executes on the main thread, not on worker threads
+//
 TEST_F(SchedulerTest, CanForceMainThreadExecution)
 {
     std::atomic<std::thread::id> executionThreadId{};
@@ -171,7 +201,12 @@ TEST_F(SchedulerTest, CanForceMainThreadExecution)
     EXPECT_EQ(executionThreadId.load(), mainThreadId);
 }
 
-// Test 7: RAII Cancellation Token Auto-Cancel
+//
+// TEST: RAII Cancellation Token Auto-Cancel
+// PURPOSE: Verify that cancellation tokens work correctly with RAII
+// BEHAVIOR: Creates an interval task and tests token cancellation
+// EXPECTATION: Task executes initially, then stops after cancellation
+//
 TEST_F(SchedulerTest, CancellationTokenAutoCancel)
 {
     static std::atomic<int> executionCount{ 0 };
@@ -198,7 +233,12 @@ TEST_F(SchedulerTest, CancellationTokenAutoCancel)
     token.cancel();
 }
 
-// Test 8: Task Suspension and Resumption
+//
+// TEST: Task Suspension and Resumption
+// PURPOSE: Verify that tasks can suspend and resume correctly
+// BEHAVIOR: Creates a task that suspends via AsyncTask, then resumes
+// EXPECTATION: Task starts, suspends, then completes after resumption
+//
 TEST_F(SchedulerTest, TaskSuspensionAndResumption)
 {
     std::atomic<bool> taskStarted{ false };
@@ -235,7 +275,12 @@ TEST_F(SchedulerTest, TaskSuspensionAndResumption)
     EXPECT_TRUE(taskCompleted.load());
 }
 
-// Test 9: Complex Thread Routing - Task->AsyncTask->Task->AsyncTask on Main->Worker->Main->Worker
+//
+// TEST: Complex Thread Routing - Task->AsyncTask->Task->AsyncTask Pattern
+// PURPOSE: Verify complex thread switching between main and worker threads
+// BEHAVIOR: Creates a coroutine that alternates between Task and AsyncTask
+// EXPECTATION: Execution follows correct thread affinity pattern
+//
 TEST_F(SchedulerTest, ComplexThreadRouting)
 {
     std::vector<std::thread::id> executionOrder;
@@ -317,7 +362,12 @@ TEST_F(SchedulerTest, ComplexThreadRouting)
     EXPECT_NE(executionOrder[3], mainThreadId);
 }
 
-// Test 10: Debug Thread Affinity - Simple AsyncTask Test
+//
+// TEST: Simple AsyncTask Execution
+// PURPOSE: Verify basic AsyncTask functionality and worker thread routing
+// BEHAVIOR: Schedules a simple AsyncTask directly
+// EXPECTATION: AsyncTask executes on worker thread, not main thread
+//
 TEST_F(SchedulerTest, SimpleAsyncTaskTest)
 {
     auto mainThreadId = std::this_thread::get_id();
@@ -341,7 +391,12 @@ TEST_F(SchedulerTest, SimpleAsyncTaskTest)
     EXPECT_NE(executionThreadId.load(), mainThreadId);
 }
 
-// Test 11: Debug Thread Affinity - Direct Task Scheduling
+//
+// TEST: Direct Task Scheduling - Task vs AsyncTask Thread Affinity
+// PURPOSE: Verify that Task and AsyncTask have correct thread affinity
+// BEHAVIOR: Schedules both Task and AsyncTask types
+// EXPECTATION: Task executes on main thread, AsyncTask on worker thread
+//
 TEST_F(SchedulerTest, DirectTaskScheduling)
 {
     std::atomic<std::thread::id> mainTaskThread{};
@@ -376,36 +431,17 @@ TEST_F(SchedulerTest, DirectTaskScheduling)
     EXPECT_NE(asyncTaskThread.load(), mainThreadId);
 }
 
-// Test 12: Interval Task Sequential Execution with Long-Running Tasks
 //
-// BACKGROUND & PROBLEM:
-// This test captures and validates the fix for a data race issue discovered
-// in the while integrating with LandSandBoat. The issue manifested in the pathfinding code
-// (pathfind.cpp) where multiple zone tick tasks were executing simultaneously.
+// TEST: Interval Task Sequential Execution with Long-Running Tasks
+// PURPOSE: Verify that interval tasks execute sequentially even when taking longer than interval
+// BEHAVIOR: Creates interval tasks that take 75ms to complete with 50ms intervals
+// EXPECTATION: Tasks execute sequentially, never more than 1 simultaneously
 //
-// ORIGINAL ISSUE:
-// LandSandBoat uses scheduleInterval() to run zone logic every 400ms via zoneRunner()
-// coroutines. Each zone's game logic (AI pathfinding, entity updates, etc.) was intended
-// to run sequentially - one tick completing before the next begins. However, the original
-// IntervalTask implementation would reschedule the next interval BEFORE the current child
-// task completed, leading to overlapping executions when child tasks suspended (e.g.,
-// during pathfinding operations that offload to worker threads).
+// BACKGROUND: This test validates a critical concurrency fix for LandSandBoat
+// where zone tick tasks were executing simultaneously, causing data races in
+// pathfinding code. The fix ensures sequential execution by only rescheduling
+// the next interval after the current task completes.
 //
-// DATA RACE:
-// In pathfind.cpp, this caused race conditions on shared data members like m_points
-// and m_currentPoint, where one zone tick would modify these while another was still
-// accessing them, leading to crashes and undefined behavior.
-//
-// THE FIX:
-// IntervalTask now enforces sequential execution by:
-// 1. Only rescheduling the next interval AFTER the current child task completes
-// 2. Using activeIntervalTasks_ tracking to prevent multiple instances of the same
-//    interval task from executing simultaneously
-// 3. Allowing child tasks to suspend/resume on worker threads while maintaining
-//    the guarantee that only one instance of a given interval task runs at a time
-//
-// This test verifies that even when interval tasks take longer than their interval
-// period, they execute sequentially rather than in parallel, preventing data races.
 TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
 {
     static std::atomic<int> executionCount{ 0 };
@@ -464,28 +500,17 @@ TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
     EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution";
 }
 
-// Test 13: Interval Task with Suspending Coroutines
 //
-// ADVANCED SCENARIO:
-// This test specifically validates the fix for the more complex case where interval
-// tasks contain multiple suspension points (co_await operations that move work to
-// worker threads). This directly mirrors the LandSandBoat zone tick pattern.
+// TEST: Interval Task with Suspending Coroutines
+// PURPOSE: Verify sequential execution with complex suspension/resumption patterns
+// BEHAVIOR: Creates interval tasks with multiple AsyncTask suspensions
+// EXPECTATION: Sequential execution maintained even with multiple suspension points
 //
-// SERVER TICK PATTERN:
-// In LandSandBoat, zoneRunner() calls CZone::ZoneServer() which in turn calls
-// entity logic that frequently suspends via co_await-ing on AsyncTask work.
-// Each suspension moves work to a worker thread, then resumes on the main thread
-// when complete.
+// BACKGROUND: This test validates the fix for complex cases where interval tasks
+// contain multiple suspension points (co_await operations that move work to worker
+// threads). This directly mirrors LandSandBoat's zone tick pattern where
+// entity logic frequently suspends via co_await for pathfinding, and other heavy tasks.
 //
-// CRITICAL REQUIREMENT:
-// Even with multiple suspensions within a single zone tick, we must guarantee:
-// 1. No overlapping execution of zone ticks for the same zone
-// 2. Proper resumption on the main thread after worker thread operations
-// 3. Sequential processing even if individual ticks take longer than the interval
-//
-// This test simulates multiple AsyncTask suspensions (worker thread operations)
-// within each interval task execution and verifies that the sequential execution
-// guarantee is maintained throughout all suspension/resumption cycles.
 TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
 {
     static std::atomic<int> executionCount{ 0 };
@@ -561,16 +586,21 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
     EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution, even with suspensions";
 }
 
-// TEST 14:
-// This test reproduces a LandSandBoat issue where IntervalTask
-// completes but doesn't reschedule itself, leading to an empty task queue.
 //
-// The LandSandBoat tick pattern is:
+// TEST: Interval Task Rescheduling After Suspension
+// PURPOSE: Verify that interval tasks properly reschedule after complex suspension patterns
+// BEHAVIOR: Creates interval tasks with Task->AsyncTask->Task suspension pattern
+// EXPECTATION: Tasks execute multiple times with proper rescheduling
+//
+// BACKGROUND: This test reproduces and validates the fix for a LandSandBoat issue
+// where IntervalTask would complete but not reschedule itself after complex
+// suspension patterns, leading to empty task queues. The pattern tested is:
 // 1. scheduleInterval calls zoneRunner (Task)
 // 2. zoneRunner calls CZone::ZoneServer (Task)
 // 3. ZoneServer calls entity AI that does co_await AsyncTask (pathfinding, etc.)
 // 4. AsyncTask completes on worker thread, resumes on main thread
 // 5. zoneRunner completes, IntervalTask should reschedule
+//
 TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
 {
     static std::atomic<int> preExecutionCount{ 0 };
@@ -598,7 +628,6 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
         }();
 
         // Resume on main thread after AsyncTask completes
-        // This is where the FFXI server would continue processing
         postExecutionCount.fetch_add(1);
 
         co_return;
