@@ -29,6 +29,8 @@
 #include <utility>
 #include <vector>
 
+#include <concurrentqueue/concurrentqueue.h>
+
 namespace CoroRoro
 {
 
@@ -166,12 +168,15 @@ private:
 
     // Task wrapper classes are now in separate headers for better organization
 
-    std::priority_queue<ScheduledTask> timedTaskQueue_;
-    std::mutex                         timedTaskMutex_;
+    // LOCK-FREE QUEUES: Replace mutex-protected queues with moodycamel::ConcurrentQueue
+    // This eliminates the highest contention points in the scheduler
+    
+    moodycamel::ConcurrentQueue<ScheduledTask> timedTaskQueue_;
+    // Note: timedTaskMutex_ removed - no longer needed for lock-free queue
 
     // Task queue for main thread immediate execution
-    std::queue<std::unique_ptr<ISchedulableTask>> mainThreadQueue_;
-    std::mutex                                    mainThreadMutex_;
+    moodycamel::ConcurrentQueue<std::unique_ptr<ISchedulableTask>> mainThreadQueue_;
+    // Note: mainThreadMutex_ removed - no longer needed for lock-free queue
 };
 
 //
@@ -371,29 +376,46 @@ inline auto Scheduler::runExpiredTasks(time_point referenceTime) -> milliseconds
 
 inline void Scheduler::processExpiredTasks(time_point referenceTime)
 {
+    // LOCK-FREE: Process tasks from moodycamel::ConcurrentQueue
+    // Since we can't use priority queue operations, we need to handle ordering differently
+    
     std::vector<ScheduledTask> expiredTasks;
-
-    // Extract expired tasks
+    std::vector<ScheduledTask> nonExpiredTasks;
+    
+    // Extract all tasks from the lock-free queue
+    ScheduledTask dequeuedTask;
+    while (timedTaskQueue_.try_dequeue(dequeuedTask))
     {
-        std::lock_guard<std::mutex> lock(timedTaskMutex_);
-        while (!timedTaskQueue_.empty() && timedTaskQueue_.top().nextExecution <= referenceTime)
+        if (dequeuedTask.nextExecution <= referenceTime)
         {
-            expiredTasks.push_back(std::move(const_cast<ScheduledTask&>(timedTaskQueue_.top())));
-            timedTaskQueue_.pop();
+            // Task is expired - execute it
+            expiredTasks.push_back(std::move(dequeuedTask));
+        }
+        else
+        {
+            // Task is not expired - re-queue it
+            nonExpiredTasks.push_back(std::move(dequeuedTask));
         }
     }
-
+    
+    // Re-queue non-expired tasks (they'll be processed in FIFO order, not priority order)
+    // TODO: This is a temporary solution - we need a proper lock-free priority queue for optimal performance
+    for (auto& task : nonExpiredTasks)
+    {
+        timedTaskQueue_.enqueue(std::move(task));
+    }
+    
     // Execute expired tasks
-    for (auto& scheduledTask : expiredTasks)
+    for (auto& expiredTask : expiredTasks)
     {
         try
         {
-            TaskState state = scheduledTask.task->resume();
+            TaskState state = expiredTask.task->resume();
 
             if (state == TaskState::Suspended)
             {
                 // Task suspended - re-queue based on its current affinity
-                queueTask(std::move(scheduledTask.task));
+                queueTask(std::move(expiredTask.task));
             }
             // If completed or failed, task is destroyed automatically
         }
@@ -406,8 +428,9 @@ inline void Scheduler::processExpiredTasks(time_point referenceTime)
 
 inline void Scheduler::scheduleTaskAt(time_point when, std::unique_ptr<ISchedulableTask> task)
 {
-    std::lock_guard<std::mutex> lock(timedTaskMutex_);
-    timedTaskQueue_.push({ when, std::move(task) });
+    // LOCK-FREE: Use moodycamel::ConcurrentQueue::enqueue instead of mutex-protected priority queue
+    // Note: This changes from priority queue to FIFO queue - we'll need to handle ordering differently
+    timedTaskQueue_.enqueue({ when, std::move(task) });
 }
 
 inline bool Scheduler::isTaskCancelled(TaskId taskId)
@@ -465,8 +488,8 @@ inline void Scheduler::queueTask(std::unique_ptr<ISchedulableTask> task)
 
     if (affinity == ThreadAffinity::MainThread)
     {
-        std::lock_guard<std::mutex> lock(mainThreadMutex_);
-        mainThreadQueue_.emplace(std::move(task));
+        // LOCK-FREE: Use moodycamel::ConcurrentQueue::enqueue instead of mutex-protected queue
+        mainThreadQueue_.enqueue(std::move(task));
     }
     else if (affinity == ThreadAffinity::WorkerThread)
     {
@@ -475,26 +498,21 @@ inline void Scheduler::queueTask(std::unique_ptr<ISchedulableTask> task)
     else
     {
         // Default to main thread for unknown affinity
-        std::lock_guard<std::mutex> lock(mainThreadMutex_);
-        mainThreadQueue_.emplace(std::move(task));
+        // LOCK-FREE: Use moodycamel::ConcurrentQueue::enqueue instead of mutex-protected queue
+        mainThreadQueue_.enqueue(std::move(task));
     }
 }
 
 inline void Scheduler::processTaskQueue()
 {
-    // Process main thread tasks
-    std::queue<std::unique_ptr<ISchedulableTask>> tasksToProcess;
-
+    // Process main thread tasks using lock-free queue
+    // LOCK-FREE: Process tasks directly from moodycamel::ConcurrentQueue without swapping
+    
+    std::unique_ptr<ISchedulableTask> task;
+    
+    // Process all available tasks from the lock-free queue
+    while (mainThreadQueue_.try_dequeue(task))
     {
-        std::lock_guard<std::mutex> lock(mainThreadMutex_);
-        tasksToProcess.swap(mainThreadQueue_);
-    }
-
-    while (!tasksToProcess.empty())
-    {
-        auto task = std::move(tasksToProcess.front());
-        tasksToProcess.pop();
-
         try
         {
             TaskState state = task->resume();

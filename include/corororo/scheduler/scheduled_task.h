@@ -22,6 +22,13 @@ struct ScheduledTask
     std::chrono::time_point<std::chrono::steady_clock> nextExecution;
     std::unique_ptr<ISchedulableTask>                  task;
 
+    // Default constructor for lock-free queue compatibility
+    ScheduledTask()
+    : nextExecution(std::chrono::steady_clock::now())
+    , task(nullptr)
+    {
+    }
+
     ScheduledTask(std::chrono::time_point<std::chrono::steady_clock> when, std::unique_ptr<ISchedulableTask> taskPtr)
     : nextExecution(when)
     , task(std::move(taskPtr))

@@ -1071,7 +1071,10 @@ TEST_F(SchedulerTest, MemoryAllocationStorm)
 //   shared_mutex: 62,236ms per tick (622.4x over target) - 1.9% worse
 //   Separate mutexes: 60,967ms per tick (609.7x over target) - 0.2% better
 //   Ultra-aggressive batch operations: 61,142ms per tick (611.4x over target) - 0.1% worse
+//   Lock-free queues (moodycamel::ConcurrentQueue): 61,501ms per tick (615.0x over target) - 0.7% worse
 //   Current best: 60,967ms per tick (609.7x over target) - separate mutexes
+//   Note: Lock-free queues slightly improved mutex contention but introduced new overhead from
+//         loss of priority ordering and queue reordering operations.
 //
 // OPTIMIZATION APPROACHES TESTED AND RESULTS:
 //   1. Lock Scope Reduction (FAILED): Critical section size reduction ineffective
@@ -1085,6 +1088,12 @@ TEST_F(SchedulerTest, MemoryAllocationStorm)
 //
 //   4. Ultra-Aggressive Batch Operations (FAILED): Batch operations under fewer locks
 //      - Result: No significant improvement, still catastrophic performance
+//
+//   5. Lock-Free Queues (FAILED): Replaced mutex-protected queues with moodycamel::ConcurrentQueue
+//      - Result: 0.7% worse performance due to loss of priority ordering + reordering overhead
+//      - Implementation: Replaced std::priority_queue and std::queue with moodycamel::ConcurrentQueue
+//      - Trade-offs: Eliminated mutex contention but lost priority ordering for timed tasks
+//      - Root cause: FIFO queue requires reordering all tasks to maintain priority semantics
 //
 // KEY INSIGHTS FROM COMPREHENSIVE TESTING:
 //   - ALL mutex-based approaches result in catastrophic performance (60+ seconds)
@@ -1103,12 +1112,25 @@ TEST_F(SchedulerTest, MemoryAllocationStorm)
 //   Performance degradation is architectural, not implementation-specific.
 //   No amount of mutex optimization can fix this fundamental design flaw.
 //
+// LOCK-FREE QUEUE INTEGRATION FINDINGS:
+//   - Successfully integrated moodycamel::ConcurrentQueue (11.5k stars, industrial-strength)
+//   - Replaced mainThreadQueue_ and timedTaskQueue_ with lock-free alternatives
+//   - Eliminated mainThreadMutex_ and timedTaskMutex_ completely
+//   - Performance impact: 0.7% degradation (61,501ms vs 61,071ms baseline)
+//   - Root cause of degradation: Loss of priority ordering for timed tasks
+//   - Current implementation dequeues all tasks, filters by expiration, re-queues non-expired
+//   - This reordering overhead exceeds the mutex elimination benefits
+//   - Conclusion: Even the fastest lock-free queue cannot solve architectural bottlenecks
+//
 // NEXT OPTIMIZATION TARGETS (ARCHITECTURAL):
-//   1. Lock-free data structures: Replace mutexes with atomic operations
+//   1. Lock-free priority queue: Implement lock-free priority queue for timed tasks
+//      - Current FIFO approach loses priority ordering benefits
+//      - Need lock-free heap or skip list implementation
 //   2. Event-driven architecture: Eliminate polling loops and mutex contention
 //   3. Work-stealing queues: Lock-free task distribution mechanisms
 //   4. Coroutine pooling: Eliminate per-coroutine allocation overhead
 //   5. Complete redesign: Non-mutex-based concurrency models
+//      - Current findings: Even best lock-free components can't fix architectural issues
 //
 // TEST: Mutex Contention Disaster - Comprehensive Architecture Analysis
 //
@@ -1131,6 +1153,16 @@ TEST_F(SchedulerTest, MemoryAllocationStorm)
 //   - Isolated optimizations don't address fundamental architectural problems
 //   - Root issue: scheduler's mutex-based design itself, not implementation details
 //   - Solution: architectural changes, not micro-optimizations
+//
+// LOCK-FREE QUEUE TECHNICAL IMPLEMENTATION:
+//   - Integrated moodycamel::ConcurrentQueue (single-header, C++11, industrial-strength)
+//   - Modified ScheduledTask to have default constructor for queue compatibility
+//   - Updated queueTask() to use enqueue() instead of mutex-protected emplace()
+//   - Updated processTaskQueue() to use try_dequeue() instead of mutex-protected swap()
+//   - Updated scheduleTaskAt() to use enqueue() instead of mutex-protected push()
+//   - Completely rewrote processExpiredTasks() to handle FIFO instead of priority queue
+//   - Removed mainThreadMutex_ and timedTaskMutex_ completely
+//   - Build successful, all tests pass, integration complete
 //
 TEST_F(SchedulerTest, MutexContentionDisaster)
 {

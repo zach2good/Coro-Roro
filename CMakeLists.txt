@@ -11,6 +11,7 @@ add_library(Coro-Roro INTERFACE)
 
 target_include_directories(Coro-Roro INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/ext/include
 )
 
 target_link_libraries(Coro-Roro INTERFACE Threads::Threads)
