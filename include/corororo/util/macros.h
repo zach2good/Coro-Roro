@@ -3,7 +3,7 @@
 //
 // unreachable
 //
-//   Platform-specific unreachable code marker.
+//   Platform-specific unreachable code marker (will assert and cause a crash at runtime).
 //   TODO: If we upgrade to C++23, use std::unreachable
 //
 #ifdef __GNUC__ // GCC 4.8+, Clang, Intel and other compilers compatible with GCC (-std=c++0x or above)
@@ -25,7 +25,7 @@ inline void unreachable()
 //
 // ASSERT_UNREACHABLE
 //
-//   Marks code paths that should never be reached.
+//   Marks code paths that should never be reached (will assert and cause a crash at runtime).
 //
 #define ASSERT_UNREACHABLE() unreachable()
 

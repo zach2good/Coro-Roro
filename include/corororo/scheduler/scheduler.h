@@ -257,12 +257,8 @@ template <typename FactoryType>
 auto Scheduler::scheduleInterval(ForcedThreadAffinity affinity, Scheduler::milliseconds interval, FactoryType&& factory,
                                  Scheduler::milliseconds firstExecutionDelay) -> CancellationToken
 {
-    // TODO: Implement forced affinity interval scheduling
-    std::ignore = affinity;
-    std::ignore = interval;
-    std::ignore = factory;
-    std::ignore = firstExecutionDelay;
-    return CancellationToken{ this, 0 };
+    static_assert(false, "scheduleInterval with ForcedThreadAffinity is not implemented yet");
+    return CancellationToken{};
 }
 
 template <typename TaskType>
@@ -323,30 +319,22 @@ auto Scheduler::scheduleDelayed(Scheduler::milliseconds delay, TaskType&& task) 
 template <typename TaskType>
 auto Scheduler::scheduleDelayed(ForcedThreadAffinity affinity, Scheduler::milliseconds delay, TaskType&& task) -> CancellationToken
 {
-    // TODO: Implement forced affinity delayed scheduling
-    std::ignore = affinity;
-    std::ignore = delay;
-    std::ignore = task;
-    return CancellationToken{ this, 0 };
+    static_assert(false, "scheduleDelayed with ForcedThreadAffinity is not implemented yet");
+    return CancellationToken{};
 }
 
 template <typename TaskType>
 auto Scheduler::scheduleAt(Scheduler::time_point when, TaskType&& task) -> CancellationToken
 {
-    // TODO: Implement absolute time scheduling
-    std::ignore = when;
-    std::ignore = task;
-    return CancellationToken{ this, 0 };
+    static_assert(false, "scheduleAt with absolute time is not implemented yet");
+    return CancellationToken{};
 }
 
 template <typename TaskType>
 auto Scheduler::scheduleAt(ForcedThreadAffinity affinity, Scheduler::time_point when, TaskType&& task) -> CancellationToken
 {
-    // TODO: Implement forced affinity absolute time scheduling
-    std::ignore = affinity;
-    std::ignore = when;
-    std::ignore = task;
-    return CancellationToken{ this, 0 };
+    static_assert(false, "scheduleAt with ForcedThreadAffinity is not implemented yet");
+    return CancellationToken{};
 }
 
 //
@@ -373,26 +361,6 @@ inline auto Scheduler::runExpiredTasks(time_point referenceTime) -> milliseconds
     processTaskQueue();
 
     return std::chrono::duration_cast<milliseconds>(steady_clock::now() - start);
-}
-
-inline void Scheduler::executeOrRoute(/* ScheduledTask scheduledTask */)
-{
-    // TODO: Execute task or route to appropriate thread
-}
-
-inline void Scheduler::executeIntervalTask(/* ScheduledTask scheduledTask */)
-{
-    // TODO: Execute interval task (factory -> child pattern)
-}
-
-inline void Scheduler::routeTask(/* ScheduledTask scheduledTask */)
-{
-    // TODO: Route task to appropriate queue
-}
-
-inline void Scheduler::notifyMainThread()
-{
-    // TODO: Wake main thread
 }
 
 inline void Scheduler::processExpiredTasks(time_point referenceTime)
@@ -618,47 +586,47 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
             }
             scheduler_.activeIntervalTasks_.insert(taskId_);
         }
-        
+
         auto childTaskCoroutine = factory_();
-        childTask_ = std::make_unique<SchedulableTaskWrapper<decltype(childTaskCoroutine)>>(std::move(childTaskCoroutine));
-        childTaskStartTime_ = std::chrono::steady_clock::now();
+        childTask_              = std::make_unique<SchedulableTaskWrapper<decltype(childTaskCoroutine)>>(std::move(childTaskCoroutine));
+        childTaskStartTime_     = std::chrono::steady_clock::now();
     }
 
     // Execute the child task
     if (childTask_)
     {
         TaskState childState = childTask_->resume();
-        
+
         if (childState == TaskState::Suspended)
         {
             // Child task is suspended, we need to suspend too and continue later
             return TaskState::Suspended;
         }
-        
+
         // Child task completed (either Done or Failed)
         childTask_.reset(); // Clean up completed child task (sets to nullptr)
-        
+
         // Remove from active interval tasks since we're done
         {
             std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
             scheduler_.activeIntervalTasks_.erase(taskId_);
         }
-        
+
         // Calculate next execution time based on when we started the child task
         // This maintains consistent interval timing regardless of child execution time
         auto nextTime = childTaskStartTime_ + interval_;
-        auto now = std::chrono::steady_clock::now();
-        
+        auto now      = std::chrono::steady_clock::now();
+
         // If we're already past the next scheduled time, schedule immediately
         if (nextTime <= now)
         {
             nextTime = now;
         }
-        
+
         // Reschedule this factory task for next interval
         auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, FactoryType(factory_));
         scheduler_.scheduleTaskAt(nextTime, std::move(selfCopy));
-        
+
         return TaskState::Done; // This factory task instance is complete
     }
 
