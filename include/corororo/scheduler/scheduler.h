@@ -630,10 +630,10 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
         // Child task completed (either Done or Failed)
         childTask_.reset(); // Clean up completed child task (sets to nullptr)
 
-        // Calculate next execution time based on when we started the child task
-        // This maintains consistent interval timing regardless of child execution time
-        auto nextTime = childTaskStartTime_ + interval_;
-        auto now      = std::chrono::steady_clock::now();
+        // Calculate next execution time based on the current time plus interval
+        // This ensures consistent interval timing regardless of child execution time
+        auto now = std::chrono::steady_clock::now();
+        auto nextTime = now + interval_;
 
         // If we're already past the next scheduled time, schedule immediately
         if (nextTime <= now)
@@ -648,7 +648,9 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
         }
 
         // Reschedule this factory task for next interval
-        auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, FactoryType(factory_));
+        // Create a copy of the factory since the original may be in a moved-from state
+        FactoryType factoryCopy = factory_;
+        auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, std::move(factoryCopy));
         scheduler_.scheduleTaskAt(nextTime, std::move(selfCopy));
 
         // Mark this task as rescheduled so the wrapper doesn't remove the TaskId

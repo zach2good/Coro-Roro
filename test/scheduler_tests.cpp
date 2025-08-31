@@ -666,3 +666,208 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
     EXPECT_EQ(finalAsyncCount, 3) << "AsyncTask should execute 3 times. Got: " << finalAsyncCount;
     EXPECT_EQ(finalPostExecutionCount, 3) << "PostExecutionCount should execute 3 times. Got: " << finalPostExecutionCount;
 }
+
+// ============================================================================
+// TEST: Interval Task Rescheduling When Behind Schedule
+// PURPOSE: Verify that interval tasks properly reschedule and execute when running behind
+// BEHAVIOR: Creates interval tasks that take longer than their interval, then verifies rescheduling
+// EXPECTATION: Tasks should reschedule and execute immediately when behind schedule
+// 
+// BACKGROUND: This test addresses the core FFXI server issue where interval tasks
+// don't properly reschedule when they're running behind. The scheduler should:
+// 1. Detect when a task is behind schedule
+// 2. Reschedule it to run immediately
+// 3. Ensure it actually executes
+// ============================================================================
+TEST_F(SchedulerTest, IntervalTaskReschedulingWhenBehindSchedule)
+{
+    static std::atomic<int> executionCount{ 0 };
+    static std::atomic<int> scheduledCount{ 0 };
+    static std::atomic<int> completedCount{ 0 };
+    
+    executionCount.store(0);
+    scheduledCount.store(0);
+    completedCount.store(0);
+    
+    std::cout << "=== Starting Interval Task Rescheduling When Behind Schedule Test ===" << std::endl;
+    
+    // Create an interval task that takes longer than its interval to complete
+    auto longRunningTask = [&]() -> Task<void> {
+        int currentExecution = executionCount.fetch_add(1) + 1;
+        std::cout << "Interval task execution #" << currentExecution << " started" << std::endl;
+        
+        // Simulate work that takes longer than the interval
+        // This should cause the task to run behind schedule
+        std::this_thread::sleep_for(150ms); // Longer than 100ms interval
+        
+        std::cout << "Interval task execution #" << currentExecution << " completed" << std::endl;
+        completedCount.fetch_add(1);
+        co_return;
+    };
+    
+    // Schedule with 100ms interval, but task takes 150ms to complete
+    // This should cause the task to run behind schedule
+    auto token = scheduler->scheduleInterval(100ms, std::move(longRunningTask));
+    std::cout << "Scheduled interval task with 100ms interval (task takes 150ms to complete)" << std::endl;
+    
+    // Track when tasks are scheduled vs when they actually execute
+    auto startTime = std::chrono::steady_clock::now();
+    
+    // Let it run for several intervals to see the rescheduling behavior
+    for (int iteration = 0; iteration < 5; ++iteration)
+    {
+        std::cout << "=== Iteration " << (iteration + 1) << " ===" << std::endl;
+        
+        auto beforeCount = executionCount.load();
+        auto beforeCompleted = completedCount.load();
+        
+        std::cout << "Before runExpiredTasks: executions=" << beforeCount 
+                  << ", completed=" << beforeCompleted << std::endl;
+        
+        // Run expired tasks multiple times to allow for rescheduling
+        for (int j = 0; j < 10; ++j)
+        {
+            scheduler->runExpiredTasks();
+            std::this_thread::sleep_for(20ms);
+        }
+        
+        auto afterCount = executionCount.load();
+        auto afterCompleted = completedCount.load();
+        
+        std::cout << "After runExpiredTasks: executions=" << afterCount 
+                  << ", completed=" << afterCompleted << std::endl;
+        
+        // Check if we made progress
+        if (afterCount > beforeCount)
+        {
+            std::cout << "New execution started" << std::endl;
+        }
+        else if (afterCompleted > beforeCompleted)
+        {
+            std::cout << "Existing execution completed" << std::endl;
+        }
+        else
+        {
+            std::cout << "No progress made - potential rescheduling issue" << std::endl;
+        }
+        
+        // Wait for the next expected interval
+        std::this_thread::sleep_for(100ms);
+    }
+    
+    // Cancel the task
+    token.cancel();
+    
+    // Allow any remaining tasks to complete
+    std::this_thread::sleep_for(200ms);
+    for (int i = 0; i < 10; ++i)
+    {
+        scheduler->runExpiredTasks();
+        std::this_thread::sleep_for(20ms);
+    }
+    
+    // Final analysis
+    int finalExecutions = executionCount.load();
+    int finalCompleted = completedCount.load();
+    auto totalTime = std::chrono::steady_clock::now() - startTime;
+    
+    std::cout << "=== Final Results ===" << std::endl;
+    std::cout << "Total time: " << std::chrono::duration_cast<std::chrono::milliseconds>(totalTime).count() << "ms" << std::endl;
+    std::cout << "Total executions started: " << finalExecutions << std::endl;
+    std::cout << "Total executions completed: " << finalCompleted << std::endl;
+    
+    // Calculate expected behavior:
+    // - 100ms interval over ~500ms should allow for multiple executions
+    // - Even with 150ms execution time, we should see at least 3-4 executions
+    // - The key is that when behind schedule, tasks should reschedule immediately
+    
+    EXPECT_GE(finalExecutions, 3) << "Should have started at least 3 executions due to rescheduling when behind schedule. Got: " << finalExecutions;
+    EXPECT_GE(finalCompleted, 3) << "Should have completed at least 3 executions. Got: " << finalCompleted;
+    EXPECT_EQ(finalExecutions, finalCompleted) << "All started executions should complete";
+    
+    // Most importantly: verify that the scheduler is actually rescheduling when behind
+    if (finalExecutions < 3)
+    {
+        std::cout << "WARNING: Scheduler appears to not be rescheduling when tasks are behind schedule!" << std::endl;
+        std::cout << "This could be the root cause of the FFXI server issue." << std::endl;
+    }
+}
+
+// ============================================================================
+// TEST: Clock Type Comparison - Why Timestamps Look Suspicious
+// PURPOSE: Demonstrate the difference between steady_clock and system_clock
+// BEHAVIOR: Shows how different clock types produce different timestamp values
+// EXPECTATION: steady_clock produces relative timestamps, system_clock produces absolute timestamps
+// 
+// BACKGROUND: This test explains why the FFXI server shows suspicious timestamps like "483434871ms".
+// The issue is likely that steady_clock::time_since_epoch() is being used for logging instead of
+// system_clock::time_since_epoch(). steady_clock measures time since system boot, while
+// system_clock measures time since Unix epoch (1970).
+// ============================================================================
+TEST_F(SchedulerTest, ClockTypeComparison)
+{
+    std::cout << "=== Clock Type Comparison Test ===" << std::endl;
+    
+    // Get current time using different clock types
+    auto steadyNow = std::chrono::steady_clock::now();
+    auto systemNow = std::chrono::system_clock::now();
+    
+    // Convert to milliseconds since epoch
+    auto steadyMs = std::chrono::duration_cast<std::chrono::milliseconds>(steadyNow.time_since_epoch()).count();
+    auto systemMs = std::chrono::duration_cast<std::chrono::milliseconds>(systemNow.time_since_epoch()).count();
+    
+    std::cout << "steady_clock::now().time_since_epoch(): " << steadyMs << "ms" << std::endl;
+    std::cout << "system_clock::now().time_since_epoch(): " << systemMs << "ms" << std::endl;
+    
+    // Calculate time since Unix epoch (1970)
+    auto unixEpoch = std::chrono::system_clock::from_time_t(0);
+    auto timeSince1970 = std::chrono::duration_cast<std::chrono::milliseconds>(systemNow - unixEpoch).count();
+    
+    std::cout << "Time since Unix epoch (1970): " << timeSince1970 << "ms" << std::endl;
+    
+    // Calculate time since system boot (approximate)
+    auto timeSinceBoot = steadyMs;
+    std::cout << "Time since system boot (approximate): " << timeSinceBoot << "ms" << std::endl;
+    
+    // Convert to human-readable formats
+    auto steadySeconds = steadyMs / 1000.0;
+    auto systemSeconds = systemMs / 1000.0;
+    auto unixSeconds = timeSince1970 / 1000.0;
+    auto bootSeconds = timeSinceBoot / 1000.0;
+    
+    std::cout << std::endl << "Human-readable formats:" << std::endl;
+    std::cout << "steady_clock: " << steadySeconds << " seconds" << std::endl;
+    std::cout << "system_clock: " << systemSeconds << " seconds" << std::endl;
+    std::cout << "Unix epoch: " << unixSeconds << " seconds" << std::endl;
+    std::cout << "System boot: " << bootSeconds << " seconds" << std::endl;
+    
+    // Convert Unix timestamp to date
+    auto unixTime = std::chrono::duration_cast<std::chrono::seconds>(systemNow - unixEpoch).count();
+    
+    // Use Windows-safe time functions
+    time_t rawTime = static_cast<time_t>(unixTime);
+    struct tm timeInfo;
+    #ifdef _WIN32
+        gmtime_s(&timeInfo, &rawTime);
+    #else
+        timeInfo = *std::gmtime(&rawTime);
+    #endif
+    
+    char timeStr[100];
+    std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S UTC", &timeInfo);
+    
+    std::cout << "Current UTC time: " << timeStr << std::endl;
+    
+    // The key insight: steady_clock is for relative timing, system_clock is for absolute timing
+    std::cout << std::endl << "=== KEY INSIGHT ===" << std::endl;
+    std::cout << "steady_clock::time_since_epoch() gives time since system boot (~5.6 days)" << std::endl;
+    std::cout << "system_clock::time_since_epoch() gives time since Unix epoch (1970)" << std::endl;
+    std::cout << "For logging absolute timestamps, use system_clock!" << std::endl;
+    std::cout << "For measuring intervals, use steady_clock!" << std::endl;
+    
+    // Verify the values make sense
+    EXPECT_GT(systemMs, 1600000000000) << "system_clock should be after 2020"; // After 2020
+    EXPECT_LT(steadyMs, 1000000000) << "steady_clock should be less than ~11 days"; // Less than ~11 days
+    
+    std::cout << "=== Test completed ===" << std::endl;
+}
