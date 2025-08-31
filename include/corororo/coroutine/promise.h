@@ -21,9 +21,9 @@ struct PromiseTypeBase
 {
     static constexpr ThreadAffinity affinity = Affinity;
 
-    std::shared_ptr<ExecutionContext> context_         = nullptr;
-    std::coroutine_handle<>           continuation_    = nullptr;
-    std::function<void()>             unblockCallerFn_ = nullptr;
+    ExecutionContext*       context_         = nullptr;
+    std::coroutine_handle<> continuation_    = nullptr;
+    std::function<void()>   unblockCallerFn_ = nullptr;
 
     struct InitialAwaiter final
     {
@@ -37,9 +37,11 @@ struct PromiseTypeBase
         {
             auto& p = h.promise();
 
+            // Only allocate new context if this is the root coroutine
+            // Child coroutines will reference the parent's context
             if (!p.context_)
             {
-                p.context_                  = std::make_shared<ExecutionContext>();
+                p.context_                  = new ExecutionContext();
                 p.context_->activeAffinity_ = p.affinity;
             }
 
@@ -125,12 +127,16 @@ struct PromiseTypeBase
         return {};
     }
 
-    // This is called for every `co_await`.
+    // This is called for every `co_await`. This is the key optimization point.
     template <ThreadAffinity AwaitedAffinity, typename AwaitedT>
     auto await_transform(CoroutineTask<AwaitedAffinity, AwaitedT>&& awaitable) noexcept
     {
-        constexpr bool isSameAffinity        = (affinity == AwaitedAffinity);
+        constexpr bool isSameAffinity = (affinity == AwaitedAffinity);
+
+        // SIMPLE OPTIMIZATION: Every coroutine references the same context object
+        // No shared_ptr overhead, no child tracking - just direct pointer sharing
         awaitable.handle_.promise().context_ = this->context_;
+
         return ConditionalTransferAwaiter<isSameAffinity, decltype(awaitable.handle_)>{ std::move(awaitable.handle_) };
     }
 
