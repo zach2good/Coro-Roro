@@ -133,6 +133,7 @@ TEST_F(SchedulerPerformanceTest, BenchmarkInlineNoScheduler)
     EXPECT_GT(tasksPerSecond, 300.0 * windowsPerformancePenalty()); // Realistic expectation for complex parentTask
 }
 
+// FIXME: Sometimes segfault in TearDown - this is likely a test setup problem, not an issue with the library.
 TEST_F(SchedulerPerformanceTest, BenchmarkSchedulerMultiThreaded)
 {
     auto start = std::chrono::steady_clock::now();

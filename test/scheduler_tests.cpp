@@ -411,7 +411,7 @@ TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
     static std::atomic<int> executionCount{ 0 };
     static std::atomic<int> simultaneousExecutions{ 0 };
     static std::atomic<int> maxSimultaneousExecutions{ 0 };
-    
+
     executionCount.store(0);
     simultaneousExecutions.store(0);
     maxSimultaneousExecutions.store(0);
@@ -423,17 +423,17 @@ TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
         {
             // Track simultaneous executions
             int current = simultaneousExecutions.fetch_add(1) + 1;
-            int max = maxSimultaneousExecutions.load();
+            int max     = maxSimultaneousExecutions.load();
             while (current > max && !maxSimultaneousExecutions.compare_exchange_weak(max, current))
             {
                 max = maxSimultaneousExecutions.load();
             }
-            
+
             executionCount.fetch_add(1);
-            
+
             // Simulate long-running task that takes longer than interval
             std::this_thread::sleep_for(75ms); // Longer than 50ms interval
-            
+
             simultaneousExecutions.fetch_sub(1);
             co_return;
         });
@@ -447,19 +447,19 @@ TEST_F(SchedulerTest, IntervalTaskSequentialExecution)
     }
 
     token.cancel();
-    
+
     // Allow any remaining tasks to complete
     std::this_thread::sleep_for(100ms);
     scheduler->runExpiredTasks();
 
     // Verify sequential execution behavior
-    int finalCount = executionCount.load();
+    int finalCount      = executionCount.load();
     int maxSimultaneous = maxSimultaneousExecutions.load();
-    
+
     // Should have executed at least a few times, but not as many as if they were parallel
     EXPECT_GT(finalCount, 1) << "Should have executed multiple times";
     EXPECT_LT(finalCount, 6) << "Should not execute as many times as if parallel (due to long execution)";
-    
+
     // Most importantly: should never have more than 1 simultaneous execution
     EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution";
 }
@@ -492,7 +492,7 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
     static std::atomic<int> suspensionCount{ 0 };
     static std::atomic<int> simultaneousExecutions{ 0 };
     static std::atomic<int> maxSimultaneousExecutions{ 0 };
-    
+
     executionCount.store(0);
     suspensionCount.store(0);
     simultaneousExecutions.store(0);
@@ -504,14 +504,14 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
         {
             // Track simultaneous executions
             int current = simultaneousExecutions.fetch_add(1) + 1;
-            int max = maxSimultaneousExecutions.load();
+            int max     = maxSimultaneousExecutions.load();
             while (current > max && !maxSimultaneousExecutions.compare_exchange_weak(max, current))
             {
                 max = maxSimultaneousExecutions.load();
             }
-            
+
             executionCount.fetch_add(1);
-            
+
             // Simulate work that suspends and resumes multiple times
             co_await [&]() -> AsyncTask<void>
             {
@@ -519,14 +519,14 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
                 std::this_thread::sleep_for(20ms); // Work on worker thread
                 co_return;
             }();
-            
+
             co_await [&]() -> AsyncTask<void>
             {
                 suspensionCount.fetch_add(1);
                 std::this_thread::sleep_for(15ms); // More work on worker thread
                 co_return;
             }();
-            
+
             simultaneousExecutions.fetch_sub(1);
             co_return;
         });
@@ -540,7 +540,7 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
     }
 
     token.cancel();
-    
+
     // Allow any remaining tasks to complete
     std::this_thread::sleep_for(100ms);
     for (int i = 0; i < 10; ++i)
@@ -549,14 +549,14 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
         std::this_thread::sleep_for(10ms);
     }
 
-    int finalCount = executionCount.load();
+    int finalCount       = executionCount.load();
     int finalSuspensions = suspensionCount.load();
-    int maxSimultaneous = maxSimultaneousExecutions.load();
-    
+    int maxSimultaneous  = maxSimultaneousExecutions.load();
+
     // Should have executed multiple times with suspensions
     EXPECT_GT(finalCount, 1) << "Should have executed multiple times";
     EXPECT_EQ(finalSuspensions, finalCount * 2) << "Should have 2 suspensions per execution";
-    
+
     // Most importantly: should never have more than 1 simultaneous execution
     EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution, even with suspensions";
 }
@@ -565,65 +565,55 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
 {
     // This test reproduces the FFXI server issue where IntervalTask
     // completes but doesn't reschedule itself, leading to empty task queue
-    
+
     // The FFXI server pattern is:
     // 1. scheduleInterval calls zoneRunner (Task)
-    // 2. zoneRunner calls CZone::ZoneServer (Task) 
+    // 2. zoneRunner calls CZone::ZoneServer (Task)
     // 3. ZoneServer calls entity AI that does co_await AsyncTask (pathfinding, etc.)
     // 4. AsyncTask completes on worker thread, resumes on main thread
     // 5. zoneRunner completes, IntervalTask should reschedule
-    
+
     static std::atomic<int> preExecutionCount{ 0 };
     static std::atomic<int> asyncTaskCount{ 0 };
     static std::atomic<int> postExecutionCount{ 0 };
+
     preExecutionCount.store(0);
     asyncTaskCount.store(0);
     postExecutionCount.store(0);
-    
-    std::cout << "=== Starting IntervalTaskReschedulingFailure test ===" << std::endl;
-    
+
     // Simulate the zone tick logic with Task->AsyncTask->Task pattern
-    auto zoneTickFactory = []() -> Task<void> {
-        int currentCount = preExecutionCount.fetch_add(1) + 1;
-        std::cout << "zoneTickFactory execution #" << currentCount << " started" << std::endl;
-        
+    auto zoneTickFactory = []() -> Task<void>
+    {
+        preExecutionCount.fetch_add(1);
+
         // Simulate CZone::ZoneServer calling entity AI that suspends
-        co_await [&]() -> AsyncTask<void> {
-            int currentAsyncCount = asyncTaskCount.fetch_add(1) + 1;
-            std::cout << "AsyncTask execution #" << currentAsyncCount << " started on worker thread" << std::endl;
-            
+        co_await [&]() -> AsyncTask<void>
+        {
+            asyncTaskCount.fetch_add(1);
+
             // Simulate pathfinding/AI work on worker thread
             std::this_thread::sleep_for(10ms);
-            
-            std::cout << "AsyncTask execution #" << currentAsyncCount << " completed on worker thread" << std::endl;
+
             co_return;
         }();
-        
+
         // Resume on main thread after AsyncTask completes
         // This is where the FFXI server would continue processing
-        std::cout << "zoneTickFactory execution #" << currentCount << " resumed on main thread" << std::endl;
-
         postExecutionCount.fetch_add(1);
-        
+
         co_return;
     };
-    
+
     // Schedule the interval task (like gScheduler.scheduleInterval(kLogicUpdateInterval))
     auto token = scheduler->scheduleInterval(100ms, std::move(zoneTickFactory));
-    std::cout << "Scheduled interval task with 100ms interval" << std::endl;
-    
+
     // Wait for multiple executions - this should trigger the rescheduling bug
     // Total time to run: 350ms
     const auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < 7; ++i)
     {
-        std::cout << "=== Iteration " << (i+1) << " ===" << std::endl;
-        std::cout << "Before runExpiredTasks: preExecutionCount=" << preExecutionCount.load() << ", asyncTaskCount=" << asyncTaskCount.load() << std::endl;
-        
         scheduler->runExpiredTasks();
-        
-        std::cout << "After runExpiredTasks: preExecutionCount=" << preExecutionCount.load() << ", asyncTaskCount=" << asyncTaskCount.load() << std::endl;
-        
+
         const auto now = std::chrono::steady_clock::now();
         if (now - start < 350ms)
         {
@@ -631,23 +621,17 @@ TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
             continue;
         }
 
-        // 350ms has passed, lets cancel the task, sleep for a further 150ms to make sure the task has properly stopped
+        // 350ms has passed, lets cancel the task, sleep for a further 250ms to make sure the task has properly stopped
         token.cancel();
-        std::this_thread::sleep_for(150ms);
+        std::this_thread::sleep_for(250ms);
     }
-    
-    // The task should have executed 3 times
-    int finalCount = preExecutionCount.load();
-    int finalAsyncCount = asyncTaskCount.load();
+
+    int finalCount              = preExecutionCount.load();
+    int finalAsyncCount         = asyncTaskCount.load();
     int finalPostExecutionCount = postExecutionCount.load();
-    
-    std::cout << "=== Final Results ===" << std::endl;
-    std::cout << "Total executions: " << finalCount << std::endl;
-    std::cout << "Total AsyncTask executions: " << finalAsyncCount << std::endl;
-    std::cout << "Total post-executions: " << finalPostExecutionCount << std::endl;
-    
+
     // If we've scheduled the zoneTickFactory to run at intervals of 100ms, and
-    // we are continually calling scheduler->runExpiredTasks(); for 350ms, we
+    // we are continually calling scheduler->runExpiredTasks() for 350ms, we
     // expect the different execution counts all to equal 3.
     EXPECT_EQ(finalCount, 3) << "IntervalTask should execute 3 times. Got: " << finalCount;
     EXPECT_EQ(finalAsyncCount, 3) << "AsyncTask should execute 3 times. Got: " << finalAsyncCount;

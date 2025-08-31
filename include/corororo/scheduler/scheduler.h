@@ -129,6 +129,8 @@ private:
     void scheduleTaskAt(time_point when, std::unique_ptr<ISchedulableTask> task);
     void addInFlightTask(TaskId taskId);
     void removeInFlightTask(TaskId taskId);
+    void markTaskAsRescheduled(TaskId taskId);
+    bool isTaskRescheduled(TaskId taskId) const;
 
     // Cancellation management
     bool isTaskCancelled(TaskId taskId);
@@ -145,8 +147,9 @@ private:
     std::atomic<TaskId>        nextTaskId_{ 1 };
     std::unordered_set<TaskId> inFlightTasks_;
     std::unordered_set<TaskId> cancelledTasks_;
+    std::unordered_set<TaskId> rescheduledTasks_;    // Tracks tasks that have been rescheduled (don't remove from inFlightTasks)
     std::unordered_set<TaskId> activeIntervalTasks_; // Tracks interval tasks that are currently executing
-    std::mutex                 taskTrackingMutex_;
+    mutable std::mutex         taskTrackingMutex_;
 
     std::thread::id mainThreadId_;
     milliseconds    destructionGracePeriod_;
@@ -435,6 +438,18 @@ inline void Scheduler::removeInFlightTask(TaskId taskId)
     cancelledTasks_.erase(taskId); // Clean up cancelled task tracking too
 }
 
+inline void Scheduler::markTaskAsRescheduled(TaskId taskId)
+{
+    std::lock_guard<std::mutex> lock(taskTrackingMutex_);
+    rescheduledTasks_.insert(taskId);
+}
+
+inline bool Scheduler::isTaskRescheduled(TaskId taskId) const
+{
+    std::lock_guard<std::mutex> lock(taskTrackingMutex_);
+    return rescheduledTasks_.find(taskId) != rescheduledTasks_.end();
+}
+
 inline void Scheduler::queueTask(std::unique_ptr<ISchedulableTask> task)
 {
     ThreadAffinity affinity = task->threadAffinity();
@@ -549,10 +564,19 @@ inline auto DelayedTask<TaskType>::resume() -> TaskState
     // Execute the task directly
     TaskState result = task_.resume();
 
-    // If task is done, remove from in-flight
+    // If task is done, remove from in-flight (unless it was rescheduled)
     if (result == TaskState::Done)
     {
-        scheduler_.removeInFlightTask(taskId_);
+        if (!scheduler_.isTaskRescheduled(taskId_))
+        {
+            scheduler_.removeInFlightTask(taskId_);
+        }
+        else
+        {
+            // Task was rescheduled, clear the rescheduled flag but keep it in-flight
+            std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
+            scheduler_.rescheduledTasks_.erase(taskId_);
+        }
     }
 
     return result;
@@ -606,12 +630,6 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
         // Child task completed (either Done or Failed)
         childTask_.reset(); // Clean up completed child task (sets to nullptr)
 
-        // Remove from active interval tasks since we're done
-        {
-            std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
-            scheduler_.activeIntervalTasks_.erase(taskId_);
-        }
-
         // Calculate next execution time based on when we started the child task
         // This maintains consistent interval timing regardless of child execution time
         auto nextTime = childTaskStartTime_ + interval_;
@@ -623,9 +641,18 @@ inline auto IntervalTask<FactoryType>::resume() -> TaskState
             nextTime = now;
         }
 
+        // Remove from active interval tasks since we're done
+        {
+            std::lock_guard<std::mutex> lock(scheduler_.taskTrackingMutex_);
+            scheduler_.activeIntervalTasks_.erase(taskId_);
+        }
+
         // Reschedule this factory task for next interval
         auto selfCopy = std::make_unique<IntervalTask>(scheduler_, taskId_, interval_, FactoryType(factory_));
         scheduler_.scheduleTaskAt(nextTime, std::move(selfCopy));
+
+        // Mark this task as rescheduled so the wrapper doesn't remove the TaskId
+        scheduler_.markTaskAsRescheduled(taskId_);
 
         return TaskState::Done; // This factory task instance is complete
     }
