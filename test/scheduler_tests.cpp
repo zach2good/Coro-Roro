@@ -560,3 +560,96 @@ TEST_F(SchedulerTest, IntervalTaskWithSuspendingCoroutines)
     // Most importantly: should never have more than 1 simultaneous execution
     EXPECT_EQ(maxSimultaneous, 1) << "Should never have more than 1 simultaneous execution, even with suspensions";
 }
+
+TEST_F(SchedulerTest, IntervalTaskReschedulingFailure)
+{
+    // This test reproduces the FFXI server issue where IntervalTask
+    // completes but doesn't reschedule itself, leading to empty task queue
+    
+    // The FFXI server pattern is:
+    // 1. scheduleInterval calls zoneRunner (Task)
+    // 2. zoneRunner calls CZone::ZoneServer (Task) 
+    // 3. ZoneServer calls entity AI that does co_await AsyncTask (pathfinding, etc.)
+    // 4. AsyncTask completes on worker thread, resumes on main thread
+    // 5. zoneRunner completes, IntervalTask should reschedule
+    
+    static std::atomic<int> preExecutionCount{ 0 };
+    static std::atomic<int> asyncTaskCount{ 0 };
+    static std::atomic<int> postExecutionCount{ 0 };
+    preExecutionCount.store(0);
+    asyncTaskCount.store(0);
+    postExecutionCount.store(0);
+    
+    std::cout << "=== Starting IntervalTaskReschedulingFailure test ===" << std::endl;
+    
+    // Simulate the zone tick logic with Task->AsyncTask->Task pattern
+    auto zoneTickFactory = []() -> Task<void> {
+        int currentCount = preExecutionCount.fetch_add(1) + 1;
+        std::cout << "zoneTickFactory execution #" << currentCount << " started" << std::endl;
+        
+        // Simulate CZone::ZoneServer calling entity AI that suspends
+        co_await [&]() -> AsyncTask<void> {
+            int currentAsyncCount = asyncTaskCount.fetch_add(1) + 1;
+            std::cout << "AsyncTask execution #" << currentAsyncCount << " started on worker thread" << std::endl;
+            
+            // Simulate pathfinding/AI work on worker thread
+            std::this_thread::sleep_for(10ms);
+            
+            std::cout << "AsyncTask execution #" << currentAsyncCount << " completed on worker thread" << std::endl;
+            co_return;
+        }();
+        
+        // Resume on main thread after AsyncTask completes
+        // This is where the FFXI server would continue processing
+        std::cout << "zoneTickFactory execution #" << currentCount << " resumed on main thread" << std::endl;
+
+        postExecutionCount.fetch_add(1);
+        
+        co_return;
+    };
+    
+    // Schedule the interval task (like gScheduler.scheduleInterval(kLogicUpdateInterval))
+    auto token = scheduler->scheduleInterval(100ms, std::move(zoneTickFactory));
+    std::cout << "Scheduled interval task with 100ms interval" << std::endl;
+    
+    // Wait for multiple executions - this should trigger the rescheduling bug
+    // Total time to run: 350ms
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 7; ++i)
+    {
+        std::cout << "=== Iteration " << (i+1) << " ===" << std::endl;
+        std::cout << "Before runExpiredTasks: preExecutionCount=" << preExecutionCount.load() << ", asyncTaskCount=" << asyncTaskCount.load() << std::endl;
+        
+        scheduler->runExpiredTasks();
+        
+        std::cout << "After runExpiredTasks: preExecutionCount=" << preExecutionCount.load() << ", asyncTaskCount=" << asyncTaskCount.load() << std::endl;
+        
+        const auto now = std::chrono::steady_clock::now();
+        if (now - start < 350ms)
+        {
+            std::this_thread::sleep_for(50ms);
+            continue;
+        }
+
+        // 350ms has passed, lets cancel the task, sleep for a further 150ms to make sure the task has properly stopped
+        token.cancel();
+        std::this_thread::sleep_for(150ms);
+    }
+    
+    // The task should have executed 3 times
+    int finalCount = preExecutionCount.load();
+    int finalAsyncCount = asyncTaskCount.load();
+    int finalPostExecutionCount = postExecutionCount.load();
+    
+    std::cout << "=== Final Results ===" << std::endl;
+    std::cout << "Total executions: " << finalCount << std::endl;
+    std::cout << "Total AsyncTask executions: " << finalAsyncCount << std::endl;
+    std::cout << "Total post-executions: " << finalPostExecutionCount << std::endl;
+    
+    // If we've scheduled the zoneTickFactory to run at intervals of 100ms, and
+    // we are continually calling scheduler->runExpiredTasks(); for 350ms, we
+    // expect the different execution counts all to equal 3.
+    EXPECT_EQ(finalCount, 3) << "IntervalTask should execute 3 times. Got: " << finalCount;
+    EXPECT_EQ(finalAsyncCount, 3) << "AsyncTask should execute 3 times. Got: " << finalAsyncCount;
+    EXPECT_EQ(finalPostExecutionCount, 3) << "PostExecutionCount should execute 3 times. Got: " << finalPostExecutionCount;
+}
