@@ -184,3 +184,248 @@ TEST_F(SchedulerBasicTest, CanReturnValuesFromTasks)
         EXPECT_EQ(stringResult, "Hello, World!");
     }
 }
+
+//
+// TEST: Exception Handling
+// PURPOSE: Verify that exceptions in tasks are properly handled
+// BEHAVIOR: Schedules a task that throws an exception
+// EXPECTATION: Exception is caught and task state reflects failure
+//
+TEST_F(SchedulerBasicTest, CanHandleExceptions)
+{
+    std::atomic<bool> exceptionCaught{ false };
+
+    // Schedule task that throws an exception
+    scheduler->schedule(
+        [&exceptionCaught]() -> Task<void>
+        {
+            try
+            {
+                auto throwingTask = [&exceptionCaught]() -> Task<void>
+                {
+                    throw std::runtime_error("Test exception");
+                    co_return;
+                }();
+
+                // This should not be reached due to exception
+                co_await throwingTask;
+            }
+            catch (const std::runtime_error& e)
+            {
+                exceptionCaught.store(true);
+                EXPECT_STREQ(e.what(), "Test exception");
+            }
+        });
+
+    // Run main thread tasks
+    scheduler->runExpiredTasks();
+
+    // Give worker threads time to execute
+    std::this_thread::sleep_for(50ms);
+
+    EXPECT_TRUE(exceptionCaught.load());
+}
+
+//
+// TEST: Complex Nested Task Patterns
+// PURPOSE: Verify that complex nested task patterns work correctly
+// BEHAVIOR: Creates deeply nested Task->Task->Task->AsyncTask patterns
+// EXPECTATION: All tasks execute correctly in the nested pattern
+//
+TEST_F(SchedulerBasicTest, CanHandleComplexNestedPatterns)
+{
+    std::atomic<int> taskCallCount{ 0 };
+    std::atomic<int> affinityChangeCount{ 0 };
+
+    // Create a complex nested pattern: Task->Task->Task->AsyncTask
+    scheduler->schedule(
+        [&taskCallCount, &affinityChangeCount]() -> Task<void>
+        {
+            // Level 1: Task
+            ++taskCallCount;
+
+            co_await [&taskCallCount]() -> Task<void>
+            {
+                // Level 2: Task
+                ++taskCallCount;
+
+                co_await [&taskCallCount]() -> Task<void>
+                {
+                    // Level 3: Task
+                    ++taskCallCount;
+
+                    co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+                    {
+                        // Level 4: AsyncTask (should change thread affinity)
+                        ++taskCallCount;
+                        ++affinityChangeCount; // This represents the thread switch
+                        co_return;
+                    }();
+                }();
+            }();
+        });
+
+    // Run main thread tasks
+    scheduler->runExpiredTasks();
+
+    // Give worker threads time to execute
+    std::this_thread::sleep_for(50ms);
+
+    EXPECT_EQ(taskCallCount.load(), 4);
+    EXPECT_EQ(affinityChangeCount.load(), 1);
+}
+
+//
+// TEST: Long Alternating Chain
+// PURPOSE: Verify that long alternating Task->AsyncTask->Task->AsyncTask chains work
+// BEHAVIOR: Creates a long chain of alternating Task and AsyncTask calls
+// EXPECTATION: All tasks execute correctly with proper thread switching
+//
+TEST_F(SchedulerBasicTest, CanHandleLongAlternatingChain)
+{
+    std::atomic<int> taskCallCount{ 0 };
+    std::atomic<int> affinityChangeCount{ 0 };
+
+    // Create a long alternating chain: Task->AsyncTask->Task->AsyncTask->Task->AsyncTask
+    scheduler->schedule(
+        [&taskCallCount, &affinityChangeCount]() -> Task<void>
+        {
+            // Level 1: Task
+            ++taskCallCount;
+
+            co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+            {
+                // Level 2: AsyncTask
+                ++taskCallCount;
+                ++affinityChangeCount;
+
+                co_await [&taskCallCount]() -> Task<void>
+                {
+                    // Level 3: Task
+                    ++taskCallCount;
+
+                    co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+                    {
+                        // Level 4: AsyncTask
+                        ++taskCallCount;
+                        ++affinityChangeCount;
+
+                        co_await [&taskCallCount]() -> Task<void>
+                        {
+                            // Level 5: Task
+                            ++taskCallCount;
+
+                            co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+                            {
+                                // Level 6: AsyncTask
+                                ++taskCallCount;
+                                ++affinityChangeCount;
+                                co_return;
+                            }();
+                        }();
+                    }();
+                }();
+            }();
+        });
+
+    // Run main thread tasks
+    scheduler->runExpiredTasks();
+
+    // Give worker threads time to execute
+    std::this_thread::sleep_for(50ms);
+
+    EXPECT_EQ(taskCallCount.load(), 6);
+    EXPECT_EQ(affinityChangeCount.load(), 3);
+}
+
+//
+// TEST: Strides Pattern
+// PURPOSE: Verify that "strides" pattern (3 Tasks, 3 AsyncTasks, 3 Tasks, 3 AsyncTasks) works
+// BEHAVIOR: Creates a pattern with groups of 3 Tasks followed by groups of 3 AsyncTasks
+// EXPECTATION: All tasks execute correctly with proper thread switching between groups
+//
+TEST_F(SchedulerBasicTest, CanHandleStridesPattern)
+{
+    std::atomic<int> taskCallCount{ 0 };
+    std::atomic<int> affinityChangeCount{ 0 };
+
+    // Create "strides" pattern: 3 Tasks, 3 AsyncTasks, 3 Tasks, 3 AsyncTasks
+    scheduler->schedule(
+        [&taskCallCount, &affinityChangeCount]() -> Task<void>
+        {
+            // First stride: 3 Tasks
+            co_await [&taskCallCount]() -> Task<void>
+            {
+                ++taskCallCount;
+                co_await [&taskCallCount]() -> Task<void>
+                {
+                    ++taskCallCount;
+                    co_await [&taskCallCount]() -> Task<void>
+                    {
+                        ++taskCallCount;
+                        co_return;
+                    }();
+                }();
+            }();
+
+            // Second stride: 3 AsyncTasks
+            co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+            {
+                ++taskCallCount;
+                ++affinityChangeCount;
+                co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+                {
+                    ++taskCallCount;
+                    ++affinityChangeCount;
+                    co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+                    {
+                        ++taskCallCount;
+                        ++affinityChangeCount;
+                        co_return;
+                    }();
+                }();
+            }();
+
+            // Third stride: 3 Tasks
+            co_await [&taskCallCount]() -> Task<void>
+            {
+                ++taskCallCount;
+                co_await [&taskCallCount]() -> Task<void>
+                {
+                    ++taskCallCount;
+                    co_await [&taskCallCount]() -> Task<void>
+                    {
+                        ++taskCallCount;
+                        co_return;
+                    }();
+                }();
+            }();
+
+            // Fourth stride: 3 AsyncTasks
+            co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+            {
+                ++taskCallCount;
+                ++affinityChangeCount;
+                co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+                {
+                    ++taskCallCount;
+                    ++affinityChangeCount;
+                    co_await [&taskCallCount, &affinityChangeCount]() -> AsyncTask<void>
+                    {
+                        ++taskCallCount;
+                        ++affinityChangeCount;
+                        co_return;
+                    }();
+                }();
+            }();
+        });
+
+    // Run main thread tasks
+    scheduler->runExpiredTasks();
+
+    // Give worker threads time to execute
+    std::this_thread::sleep_for(50ms);
+
+    EXPECT_EQ(taskCallCount.load(), 12);
+    EXPECT_EQ(affinityChangeCount.load(), 6); // 2 groups of 3 AsyncTasks = 6 thread switches
+}

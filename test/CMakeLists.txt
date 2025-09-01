@@ -35,7 +35,6 @@ CPMAddPackage(
 )
 
 add_executable(coro_roro_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/coroutine_task_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/thread_verifier_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_basic_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_performance_tests.cpp
