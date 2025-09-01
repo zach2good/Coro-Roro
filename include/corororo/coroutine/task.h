@@ -2,27 +2,127 @@
 
 #include <corororo/coroutine/promise.h>
 #include <corororo/coroutine/types.h>
+#include <corororo/scheduler/scheduler.h>
 #include <coroutine>
 #include <utility>
 
 namespace CoroRoro
 {
 
-// Forward declarations
-template <typename T>
-struct AsyncTask;
-template <typename T>
-struct AsyncTaskPromise;
+// Forward declaration for TaskBase
+template <ThreadAffinity Affinity, typename T>
+struct TaskBase;
 
-// Forward declaration - methods needed by awaiters
-class Scheduler
-{
-public:
-    std::thread::id getMainThreadId() const;
-    void scheduleHandleWithAffinity(std::coroutine_handle<> handle, ThreadAffinity affinity);
-    std::coroutine_handle<> getNextMainThreadTask();
-    std::coroutine_handle<> getNextWorkerTask();
+// Awaiters are defined in promise.h - using existing TaskInitialAwaiter and FinalAwaiter
+
+namespace detail {
+
+//
+// Generic Promise - Non-void specialization
+//
+template <ThreadAffinity Affinity, typename T>
+struct Promise {
+    static constexpr ThreadAffinity affinity = Affinity;
+
+    Scheduler* scheduler_ = nullptr;
+    std::coroutine_handle<> continuation_ = nullptr;
+    T data_;
+
+    // Completely generic - no if constexpr needed!
+    auto get_return_object() noexcept {
+        return TaskBase<Affinity, T>{
+            std::coroutine_handle<Promise<Affinity, T>>::from_promise(*this)
+        };
+    }
+
+    // Use awaiters from promise.h
+    auto initial_suspend() const noexcept {
+        return TaskInitialAwaiter{scheduler_};
+    }
+
+    auto final_suspend() noexcept {
+        return FinalAwaiter<Promise<Affinity, T>>{};
+    }
+
+    // Only return_value for non-void types
+    void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>) {
+        data_ = std::move(value);
+    }
+
+    void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>) {
+        data_ = value;
+    }
+
+    auto result() -> T& {
+        return data_;
+    }
+
+    void unhandled_exception() noexcept { std::terminate(); }
+
+    // Await transform - same for all affinities
+    template <typename AwaitableType>
+    auto await_transform(AwaitableType&& awaitable) noexcept {
+        if constexpr (requires { awaitable.handle_; }) {
+            if (awaitable.handle_ && !awaitable.handle_.done()) {
+                awaitable.handle_.promise().scheduler_ = scheduler_;
+            }
+            return std::forward<AwaitableType>(awaitable);
+        } else {
+            return std::forward<AwaitableType>(awaitable);
+        }
+    }
+
+    template <typename U>
+    void yield_value(U&&) = delete;
 };
+
+// Specialization for void types
+template <ThreadAffinity Affinity>
+struct Promise<Affinity, void> {
+    static constexpr ThreadAffinity affinity = Affinity;
+
+    Scheduler* scheduler_ = nullptr;
+    std::coroutine_handle<> continuation_ = nullptr;
+
+    // Completely generic - no if constexpr needed!
+    auto get_return_object() noexcept {
+        return TaskBase<Affinity, void>{
+            std::coroutine_handle<Promise<Affinity, void>>::from_promise(*this)
+        };
+    }
+
+    // Use awaiters from promise.h
+    auto initial_suspend() const noexcept {
+        return TaskInitialAwaiter{scheduler_};
+    }
+
+    auto final_suspend() noexcept {
+        return FinalAwaiter<Promise<Affinity, void>>{};
+    }
+
+    // Only return_void for void types
+    void return_void() noexcept {}
+
+    void unhandled_exception() noexcept { std::terminate(); }
+
+    // Await transform - same for all affinities
+    template <typename AwaitableType>
+    auto await_transform(AwaitableType&& awaitable) noexcept {
+        if constexpr (requires { awaitable.handle_; }) {
+            if (awaitable.handle_ && !awaitable.handle_.done()) {
+                awaitable.handle_.promise().scheduler_ = scheduler_;
+            }
+            return std::forward<AwaitableType>(awaitable);
+        } else {
+            return std::forward<AwaitableType>(awaitable);
+        }
+    }
+
+    template <typename U>
+    void yield_value(U&&) = delete;
+};
+
+} // namespace detail
 
 //
 // TaskBase - Simplified base struct with baked-in affinity (no CRTP complexity)
@@ -33,10 +133,8 @@ struct TaskBase
     using ResultType                         = T;
     static constexpr ThreadAffinity affinity = Affinity;
 
-    // Promise type depends on affinity
-    using promise_type = std::conditional_t<Affinity == ThreadAffinity::Main,
-                                           detail::TaskPromise<TaskBase<Affinity, T>, T>,
-                                           AsyncTaskPromise<T>>;
+    // Generic promise type - affinity is handled through templates
+    using promise_type = detail::Promise<Affinity, T>;
 
     TaskBase() noexcept = default;
 
@@ -104,7 +202,8 @@ struct TaskBase
 
     auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
     {
-        return detail::await_suspend(handle_, coroutine);
+        // For now, just resume the awaiting coroutine directly
+        return coroutine;
     }
 
     // await_resume - non-void specialization
@@ -135,163 +234,6 @@ using Task = TaskBase<ThreadAffinity::Main, T>;
 template <typename T>
 using AsyncTask = TaskBase<ThreadAffinity::Worker, T>;
 
-//
-// Custom initial awaiter for AsyncTask types - uses compile-time affinity for symmetric transfer
-struct AsyncTaskInitialAwaiter
-{
-    Scheduler* scheduler = nullptr;
 
-    AsyncTaskInitialAwaiter(Scheduler* sched) : scheduler(sched) {}
-
-    // Use compile-time affinity optimization - AsyncTask<T> always targets Worker thread
-    bool await_ready() const noexcept
-    {
-        // Compile-time optimization: AsyncTask<T> has ThreadAffinity::Worker
-        // Check if we're already on a worker thread without expensive lookups
-        if constexpr (true) {  // We know this is for Worker affinity at compile time
-            if (ThreadContext::current && ThreadContext::current->affinity == ThreadAffinity::Worker) {
-                return true;  // Already on worker thread - proceed immediately!
-            }
-        }
-        return false;  // Need to transfer to worker thread
-    }
-
-    template <typename Promise>
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
-    {
-        // 🎯 Use TransferPolicy dispatcher for compile-time optimized transfer to Worker thread
-        if (scheduler) {
-            return dispatchTransfer<ThreadAffinity::Worker>(scheduler, coroutine);
-        }
-
-        return std::noop_coroutine();
-    }
-
-    void await_resume() const noexcept
-    {
-        // Nothing to do when we resume
-    }
-};
-
-// Custom final awaiter for AsyncTask types - enables symmetric transfer on completion
-struct AsyncTaskFinalAwaiter
-{
-    Scheduler* scheduler = nullptr;
-
-    AsyncTaskFinalAwaiter(Scheduler* sched) : scheduler(sched) {}
-
-    bool await_ready() const noexcept
-    {
-        return false; // Always suspend to allow continuation
-    }
-
-    template <typename Promise>
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
-    {
-        // Check if there's a continuation to resume
-        auto& promise = coroutine.promise();
-        if (promise.continuation_) {
-            // We have a continuation - check if we can do symmetric transfer
-            if (scheduler) {
-                // Try to transfer to next task on the same thread affinity
-                return scheduler->getNextWorkerTask();
-            }
-            return promise.continuation_;
-        }
-
-        return std::noop_coroutine();
-    }
-
-    void await_resume() const noexcept
-    {
-        // Nothing to do when we resume
-    }
-};
-
-// CRTP Promise for AsyncTask types (defined after AsyncTask to use it)
-//
-template <typename T>
-struct AsyncTaskPromise : detail::PromiseBase<AsyncTaskPromise<T>, T>
-{
-    AsyncTaskPromise()
-    {
-        // Set thread affinity for AsyncTasks (for compatibility)
-        this->threadAffinity_ = ThreadAffinity::Worker;
-    }
-
-    auto get_return_object() noexcept -> AsyncTask<T>
-    {
-        return AsyncTask<T>{ std::coroutine_handle<AsyncTaskPromise<T>>::from_promise(*this) };
-    }
-
-    void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
-    {
-        if constexpr (!std::is_void_v<T>)
-        {
-            this->data_ = std::move(value);
-        }
-    }
-
-    void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>)
-    {
-        if constexpr (!std::is_void_v<T>)
-        {
-            this->data_ = value;
-        }
-    }
-
-    auto result() -> std::conditional_t<!std::is_void_v<T>, T&, void>
-    {
-        if constexpr (!std::is_void_v<T>)
-        {
-            return this->data_;
-        }
-    }
-
-    auto initial_suspend() const noexcept -> AsyncTaskInitialAwaiter
-    {
-        return AsyncTaskInitialAwaiter{this->scheduler_};
-    }
-
-    auto final_suspend() noexcept -> AsyncTaskFinalAwaiter
-    {
-        return AsyncTaskFinalAwaiter{this->scheduler_};
-    }
-};
-
-// Void specialization for CRTP AsyncTaskPromise
-template <>
-struct AsyncTaskPromise<void> : detail::PromiseBase<AsyncTaskPromise<void>, void>
-{
-    AsyncTaskPromise()
-    {
-        // Set thread affinity for AsyncTasks (for compatibility)
-        this->threadAffinity_ = ThreadAffinity::Worker;
-    }
-
-    auto get_return_object() noexcept -> AsyncTask<void>
-    {
-        return AsyncTask<void>{ std::coroutine_handle<AsyncTaskPromise<void>>::from_promise(*this) };
-    }
-
-    void return_void() noexcept
-    {
-    }
-
-    void result()
-    {
-        // void tasks don't have a result
-    }
-
-    auto initial_suspend() const noexcept -> AsyncTaskInitialAwaiter
-    {
-        return AsyncTaskInitialAwaiter{this->scheduler_};
-    }
-
-    auto final_suspend() noexcept -> AsyncTaskFinalAwaiter
-    {
-        return AsyncTaskFinalAwaiter{this->scheduler_};
-    }
-};
 
 } // namespace CoroRoro

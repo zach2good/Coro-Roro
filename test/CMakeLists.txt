@@ -69,6 +69,11 @@ add_executable(new_delayed_interval_basic_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/new/delayed_interval_basic_test.cpp
 )
 
+# Simple test to verify basic compilation
+add_executable(simple_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/simple_test.cpp
+)
+
 # References to old new_coro_roro_tests target removed
 
 # Configure new test executables
@@ -81,6 +86,7 @@ foreach(test_target IN ITEMS
     new_thread_verifier_tests
     new_scheduler_interval_tests
     new_delayed_interval_basic_tests
+    simple_test
 )
     target_include_directories(${test_target} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

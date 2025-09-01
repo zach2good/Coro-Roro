@@ -12,11 +12,6 @@ enum class ThreadAffinity : uint32_t
     Worker = 2
 };
 
-// Forward declarations
-template <typename T>
-struct Task;
-
-template <typename T>
-struct AsyncTask;
+// Task and AsyncTask are now aliases defined in task.h
 
 } // namespace CoroRoro

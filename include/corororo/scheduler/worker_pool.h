@@ -199,10 +199,6 @@ inline auto WorkerThread::tryDequeueWork(std::coroutine_handle<>& handle) -> boo
 
 inline void WorkerThread::workerLoop()
 {
-    // Initialize thread context for this worker thread
-    ThreadContext workerThreadContext{ThreadAffinity::Worker, scheduler_};
-    ThreadContext::current = &workerThreadContext;
-
     while (running_.load())
     {
         std::coroutine_handle<> handle;
@@ -221,9 +217,6 @@ inline void WorkerThread::workerLoop()
             std::this_thread::yield();
         }
     }
-
-    // Clear thread context when done
-    ThreadContext::current = nullptr;
 }
 
 //
