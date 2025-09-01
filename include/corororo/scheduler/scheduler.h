@@ -71,7 +71,8 @@ public:
     using TaskId       = std::uint64_t;
 
     explicit Scheduler(size_t       numThreads             = std::max(1U, std::thread::hardware_concurrency() - 1U),
-                       milliseconds destructionGracePeriod = milliseconds(250));
+                       milliseconds destructionGracePeriod = milliseconds(250),
+                       milliseconds workerSpinDuration     = milliseconds(5));
 
     ~Scheduler();
 
@@ -352,10 +353,10 @@ auto Scheduler::scheduleAt(ForcedThreadAffinity affinity, Scheduler::time_point 
 // Non-template implementations
 //
 
-inline Scheduler::Scheduler(size_t numThreads, milliseconds destructionGracePeriod)
+inline Scheduler::Scheduler(size_t numThreads, milliseconds destructionGracePeriod, milliseconds workerSpinDuration)
 : mainThreadId_(std::this_thread::get_id())
 , destructionGracePeriod_(destructionGracePeriod)
-, workerPool_(std::make_unique<WorkerPool>(numThreads, *this))
+, workerPool_(std::make_unique<WorkerPool>(numThreads, *this, workerSpinDuration))
 {
 }
 

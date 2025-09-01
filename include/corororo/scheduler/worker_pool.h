@@ -4,6 +4,7 @@
 #include <corororo/util/macros.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -32,7 +33,8 @@ class Scheduler;
 class WorkerPool final
 {
 public:
-    explicit WorkerPool(size_t numThreads, Scheduler& scheduler);
+    explicit WorkerPool(size_t numThreads, Scheduler& scheduler, 
+                       std::chrono::milliseconds spinDuration = std::chrono::milliseconds(5));
     ~WorkerPool();
 
     NO_MOVE_NO_COPY(WorkerPool);
@@ -55,6 +57,7 @@ private:
     Scheduler&               scheduler_;
     std::atomic<bool>        shuttingDown_{ false };
     std::vector<std::thread> workerThreads_;
+    std::chrono::milliseconds spinDuration_;
 
     // LOCK-FREE TASK QUEUE: Replace std::queue + mutex with moodycamel::ConcurrentQueue
     // This eliminates the mutex contention bottleneck in worker pool
@@ -69,8 +72,8 @@ private:
 // Inline implementations
 //
 
-inline WorkerPool::WorkerPool(size_t numThreads, Scheduler& scheduler)
-: scheduler_(scheduler)
+inline WorkerPool::WorkerPool(size_t numThreads, Scheduler& scheduler, std::chrono::milliseconds spinDuration)
+: scheduler_(scheduler), spinDuration_(spinDuration)
 {
     // Start worker threads
     for (size_t i = 0; i < numThreads; ++i)
@@ -142,6 +145,41 @@ inline void WorkerPool::workerThreadLoop()
             catch (...)
             {
                 // TODO: Add proper error handling
+            }
+
+            // WORKER SPINNING: After task completion, spin for a short time
+            // This reduces context switching when tasks arrive in bursts
+            auto spinStart = std::chrono::steady_clock::now();
+            while (std::chrono::steady_clock::now() - spinStart < spinDuration_)
+            {
+                // Try to get another task while spinning
+                if (workerThreadQueue_.try_dequeue(task))
+                {
+                    // Execute the task if we got one
+                    try
+                    {
+                        TaskState state = task->resume();
+
+                        if (state == TaskState::Suspended)
+                        {
+                            // Task suspended - route back to scheduler
+                            routeTaskToScheduler(std::move(task));
+                        }
+                        // If completed or failed, task is destroyed automatically
+                    }
+                    catch (...)
+                    {
+                        // TODO: Add proper error handling
+                    }
+
+                    // Reset spin timer - we found work, so keep spinning
+                    spinStart = std::chrono::steady_clock::now();
+                }
+                else
+                {
+                    // No task available - yield briefly while spinning
+                    std::this_thread::yield();
+                }
             }
         }
         else
