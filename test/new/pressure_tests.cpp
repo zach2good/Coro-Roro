@@ -171,7 +171,7 @@ TEST_F(PressureTest, SustainedLoadTest)
     const auto end = std::chrono::steady_clock::now();
     const auto actualDuration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
     const int finalTasksProcessed = totalTasksProcessed.load();
-    const int tasksPerSecond = finalTasksProcessed / actualDuration.count();
+    const long long tasksPerSecond = finalTasksProcessed / actualDuration.count();
 
     std::cout << "Sustained Load Test Results:" << std::endl;
     std::cout << "===========================" << std::endl;
@@ -382,7 +382,7 @@ TEST_F(PressureTest, CpuUtilizationTest)
 
     const auto end = std::chrono::steady_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    const int tasksPerSecond = (numTasks * 1000) / duration.count();
+    const long long tasksPerSecond = (numTasks * 1000LL) / duration.count();
 
     std::cout << "CPU Utilization Test:" << std::endl;
     std::cout << "====================" << std::endl;

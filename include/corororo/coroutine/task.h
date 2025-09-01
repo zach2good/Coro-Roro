@@ -146,7 +146,7 @@ struct TaskBase
         return result();
     }
 
-private:
+public:
     std::coroutine_handle<promise_type> handle_ = nullptr;
 };
 

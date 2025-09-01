@@ -4,6 +4,7 @@
 #include <atomic>
 #include <coroutine>
 #include <thread>
+#include <type_traits>
 
 namespace CoroRoro
 {
@@ -121,8 +122,14 @@ namespace detail
             {
                 // Share the same scheduler reference
                 auto handle = awaitable.handle_;
-                auto& promise = handle.promise();
-                promise.scheduler_ = this->scheduler_;
+                if (handle)
+                {
+                    if (!handle.done())
+                    {
+                        auto& promise = handle.promise();
+                        promise.scheduler_ = this->scheduler_;
+                    }
+                }
 
                 return std::forward<AwaitableType>(awaitable);
             }

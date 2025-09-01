@@ -321,7 +321,7 @@ TEST_F(PerformanceTest, ThroughputTest)
 
     const auto end = std::chrono::steady_clock::now();
     const auto actualDuration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    const int tasksPerSecond = (tasksProcessed.load() * 1000) / actualDuration.count();
+    const long long tasksPerSecond = (tasksProcessed.load() * 1000LL) / actualDuration.count();
 
     std::cout << "Throughput Test:" << std::endl;
     std::cout << "===============" << std::endl;

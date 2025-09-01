@@ -24,6 +24,7 @@ protected:
     }
 
     std::unique_ptr<Scheduler> scheduler_;
+    std::mutex completionTimesMutex_;
 };
 
 //
@@ -400,7 +401,4 @@ TEST_F(IntervalTest, DelayedTaskChain)
 
     EXPECT_EQ(completedTasks.load(), chainLength);
     EXPECT_EQ(completionTimes.size(), chainLength);
-
-private:
-    std::mutex completionTimesMutex_;
-};
+}
