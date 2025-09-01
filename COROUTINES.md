@@ -925,6 +925,41 @@ The system uses compiler-specific attributes for maximum performance:
 #endif
 ```
 
+### Known Performance Warnings
+
+#### MSVC C4737: Tail Call Optimization Issue
+
+**Warning Message:**
+```
+error C4737: Unable to perform required tail call. Performance may be degraded.
+```
+
+**When This Occurs:**
+- During compilation of C++20 coroutines with complex awaiter chains
+- When the compiler cannot optimize the `await_suspend` return path
+- Particularly common with lambda coroutines and nested coroutine calls
+
+**Impact:**
+- **Performance Degradation**: Prevents optimal coroutine context switching
+- **Increased Overhead**: May add unnecessary stack frames in coroutine execution
+- **False Positive**: Warning appears even when tail call optimization would be beneficial
+
+**Root Cause:**
+- MSVC's coroutine implementation has limitations in detecting tail call opportunities
+- Complex awaiter delegation chains can confuse the optimizer
+- Lambda coroutines may not provide enough optimization context
+
+**Current Status:**
+- This is a **known MSVC compiler limitation** with C++20 coroutines
+- Does not prevent correct execution of the coroutine scheduler
+- Performance impact is typically minimal in practice
+- No known workaround that doesn't compromise code architecture
+
+**Recommendation:**
+- Keep this warning enabled as it's important for performance monitoring
+- The warning indicates areas where manual optimization might be beneficial
+- Consider this a compiler limitation rather than a code defect
+
 ## Summary
 
 The TransferPolicy system represents a complete re-architecture of the coroutine scheduling system with maximum performance optimization:

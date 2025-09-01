@@ -37,7 +37,8 @@ struct Promise {
 
     // Use awaiters from promise.h
     auto initial_suspend() const noexcept {
-        return TaskInitialAwaiter{scheduler_};
+        // Always suspend initially - scheduler will be injected later in schedule()
+        return std::suspend_always{};
     }
 
     auto final_suspend() noexcept {
@@ -93,7 +94,8 @@ struct Promise<Affinity, void> {
 
     // Use awaiters from promise.h
     auto initial_suspend() const noexcept {
-        return TaskInitialAwaiter{scheduler_};
+        // Always suspend initially - scheduler will be injected later in schedule()
+        return std::suspend_always{};
     }
 
     auto final_suspend() noexcept {

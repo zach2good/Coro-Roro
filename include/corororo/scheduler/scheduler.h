@@ -69,11 +69,12 @@ public:
     friend struct detail::TaskFinalAwaiter;
 
 private:
-    // Direct methods for awaiters to call (private - accessed via friends)
-    auto scheduleMainThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
-    auto scheduleWorkerThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
-    auto finalizeMainThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
-    auto finalizeWorkerThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
+    // Templated methods for generic awaiters (private - accessed via friends)
+    template <ThreadAffinity Affinity>
+    auto scheduleTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
+
+    template <ThreadAffinity Affinity>
+    auto finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
 
     // Helper methods
     auto scheduleMainThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
@@ -81,12 +82,7 @@ private:
     auto finalizeMainThreadTask([[maybe_unused]] std::coroutine_handle<> handle) -> std::coroutine_handle<>;
     auto finalizeWorkerThreadTask([[maybe_unused]] std::coroutine_handle<> handle) -> std::coroutine_handle<>;
 
-    // Legacy templated methods - deprecated, use direct methods instead
-    template <ThreadAffinity Affinity>
-    auto scheduleTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> = delete;
 
-    template <ThreadAffinity Affinity>
-    auto finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> = delete;
 
     // Member variables
     std::unique_ptr<WorkerPool> workerPool_;
@@ -107,8 +103,16 @@ void Scheduler::schedule(TaskType task) {
     // Extract handle and route to appropriate queue
     auto handle = task.handle_;
     if (handle && !handle.done()) {
-        // For now, just put everything on main thread
-        scheduleMainThreadTask(handle);
+        // Inject scheduler pointer into the promise for awaiter delegation
+        auto& promise = handle.promise();
+        promise.scheduler_ = this;
+        
+        // Route to appropriate queue based on task affinity
+        if constexpr (TaskType::affinity == ThreadAffinity::Main) {
+            scheduleMainThreadTask(handle);
+        } else {
+            scheduleWorkerThreadTask(handle);
+        }
     }
 }
 
@@ -133,18 +137,18 @@ inline auto Scheduler::runExpiredTasks(time_point referenceTime) -> milliseconds
 
 
 
-__declspec(noinline) auto Scheduler::scheduleMainThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+auto Scheduler::scheduleMainThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
     std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
     mainThreadTasks_.push_back(handle);
     return std::noop_coroutine(); // Return noop for now - will be replaced with symmetric transfer
 }
 
-__declspec(noinline) auto Scheduler::scheduleWorkerThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+auto Scheduler::scheduleWorkerThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
     workerPool_->enqueueToAnyWorker(handle);
     return std::noop_coroutine(); // Return noop for now - will be replaced with symmetric transfer
 }
 
-__declspec(noinline) auto Scheduler::finalizeMainThreadTask([[maybe_unused]] std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+auto Scheduler::finalizeMainThreadTask([[maybe_unused]] std::coroutine_handle<> handle) -> std::coroutine_handle<> {
     // For tail call optimization, we need to extract the handle before returning
     std::coroutine_handle<> nextHandle = nullptr;
 
@@ -163,26 +167,28 @@ __declspec(noinline) auto Scheduler::finalizeMainThreadTask([[maybe_unused]] std
     return std::noop_coroutine();
 }
 
-__declspec(noinline) auto Scheduler::finalizeWorkerThreadTask([[maybe_unused]] std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+auto Scheduler::finalizeWorkerThreadTask([[maybe_unused]] std::coroutine_handle<> handle) -> std::coroutine_handle<> {
     // Delegate to worker pool for next task
     return workerPool_->dequeueFromAnyWorker();
 }
 
-// Direct methods for tail call optimization (private - accessed via friends)
-__declspec(noinline) auto Scheduler::scheduleMainThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
-    return scheduleMainThreadTask(handle);
+// Template implementations for generic awaiters (private - accessed via friends)
+template <ThreadAffinity Affinity>
+auto Scheduler::scheduleTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+    if constexpr (Affinity == ThreadAffinity::Main) {
+        return scheduleMainThreadTask(handle);
+    } else {
+        return scheduleWorkerThreadTask(handle);
+    }
 }
 
-__declspec(noinline) auto Scheduler::scheduleWorkerThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
-    return scheduleWorkerThreadTask(handle);
-}
-
-__declspec(noinline) auto Scheduler::finalizeMainThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
-    return finalizeMainThreadTask(handle);
-}
-
-__declspec(noinline) auto Scheduler::finalizeWorkerThreadTaskDirect(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
-    return finalizeWorkerThreadTask(handle);
+template <ThreadAffinity Affinity>
+auto Scheduler::finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+    if constexpr (Affinity == ThreadAffinity::Main) {
+        return finalizeMainThreadTask(handle);
+    } else {
+        return finalizeWorkerThreadTask(handle);
+    }
 }
 
 } // namespace CoroRoro

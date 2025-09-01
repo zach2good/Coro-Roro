@@ -44,7 +44,7 @@ TEST_F(BasicSchedulerTest, BasicTaskCreation)
 {
     std::atomic<bool> taskExecuted{ false };
 
-    const auto simpleTask = []() -> Task<void>
+    const auto simpleTask = [&]() -> Task<void>
     {
         taskExecuted = true;
         co_return;
