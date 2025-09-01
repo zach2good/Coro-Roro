@@ -1,6 +1,6 @@
-- I have gone through the git history to pull out the headers from tests that capture important bugs and behaviours for the scheduler. I have put them in OLD_TEST_HEADERS. Please read this file and understand, and update our tests to capture this behaviour if needed.
-- Make sure the delayed and interval task system (with cancellation tokens) is correctly captures in tests, and then implemented.
-- Make sure the library is organised into *.h files, and is header only, with include/corororo.h being the main header for clients to use.
-- Fix all crashes, the tests must pass and be stable before we continue.
-- We must performance test the whole system with complex workloads to make it as performant as possible, and reduce the cost of thread context switching as much as possible. It's still too slow for use. Once all tests are passing for correctness (not performance) we can start being very aggressive about performance improvements.
-- It's possible in my client code to work out: "if the distance between these two points is small enough, run the navmesh/pathfinding code inline, otherwise ship to a worker thread" to try and reduce the context switching cost. What do you think?
+- [ ] I have put important old test descriptions and behaviours in OLD_TEST_HEADERS. Please read this file and understand, and update our tests to capture this behaviour if needed.
+- [ ] Make sure the delayed and interval task system (with cancellation tokens) is correctly captures in tests, and then implemented.
+- [ ] Make sure the library is organised into *.h files, and is header only, with include/corororo.h being the main header for clients to use.
+- [ ] Fix all crashes, the tests must pass and be stable before we continue.
+- [ ] We must performance test the whole system with complex workloads to make it as performant as possible, and reduce the cost of thread context switching as much as possible. It's still too slow for use. Once all tests are passing for correctness (not performance) we can start being very aggressive about performance improvements.
+- [ ] It's possible in my client code to work out: "if the distance between these two points is small enough, run the navmesh/pathfinding code inline, otherwise ship to a worker thread" to try and reduce the context switching cost. What do you think?

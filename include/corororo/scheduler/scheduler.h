@@ -91,6 +91,67 @@ public:
         }
     }
 
+    // Process expired scheduled tasks and return processing time
+    auto runExpiredTasks(time_point referenceTime = steady_clock::now()) -> milliseconds
+    {
+        auto start = steady_clock::now();
+
+        // Process main thread tasks
+        while (!mainThreadTasks_.empty())
+        {
+            auto handle = mainThreadTasks_.back();
+            mainThreadTasks_.pop_back();
+
+            if (handle && !handle.done())
+            {
+                // Resume the coroutine on the main thread
+                handle.resume();
+            }
+        }
+
+        // Process expired scheduled tasks
+        {
+            std::lock_guard<std::mutex> lock(scheduledTasksMutex_);
+            std::queue<std::shared_ptr<ScheduledTask>> remainingTasks;
+
+            while (!scheduledTasks_.empty())
+            {
+                auto task = scheduledTasks_.front();
+                scheduledTasks_.pop();
+
+                if (task->shouldExecute(referenceTime))
+                {
+                    // Execute the task
+                    auto nextTime = task->execute();
+
+                    if (task->getType() == ScheduledTask::Type::Interval && nextTime != time_point::max())
+                    {
+                        // For interval tasks, reschedule with new execution time
+                        auto rescheduledTask = std::make_shared<ScheduledTask>(
+                            ScheduledTask::Type::Interval,
+                            nextTime,
+                            task->getTaskFactory(),
+                            task->getToken()
+                        );
+                        rescheduledTask->setInterval(task->getInterval());
+                        remainingTasks.push(rescheduledTask);
+                    }
+                    // One-time tasks are discarded after execution
+                }
+                else if (!task->isCancelled())
+                {
+                    // Keep non-expired, non-cancelled tasks
+                    remainingTasks.push(task);
+                }
+                // Cancelled tasks are discarded
+            }
+
+            scheduledTasks_ = std::move(remainingTasks);
+        }
+
+        return std::chrono::duration_cast<milliseconds>(steady_clock::now() - start);
+    }
+
 private:
     // Helper method to schedule tasks with known affinity
     template <typename TaskType>
@@ -307,65 +368,7 @@ inline void Scheduler::scheduleHandle(std::coroutine_handle<> coroutine)
     }
 }
 
-inline auto Scheduler::runExpiredTasks(time_point referenceTime) -> milliseconds
-{
-    auto start = steady_clock::now();
 
-    // Process main thread tasks
-    while (!mainThreadTasks_.empty())
-    {
-        auto handle = mainThreadTasks_.back();
-        mainThreadTasks_.pop_back();
-
-        if (handle && !handle.done())
-        {
-            // Resume the coroutine on the main thread
-            handle.resume();
-        }
-    }
-
-    // Process expired scheduled tasks
-    {
-        std::lock_guard<std::mutex> lock(scheduledTasksMutex_);
-        std::queue<std::shared_ptr<ScheduledTask>> remainingTasks;
-
-        while (!scheduledTasks_.empty())
-        {
-            auto task = scheduledTasks_.front();
-            scheduledTasks_.pop();
-
-            if (task->shouldExecute(referenceTime))
-            {
-                // Execute the task
-                auto nextTime = task->execute();
-
-                if (task->getType() == ScheduledTask::Type::Interval && nextTime != time_point::max())
-                {
-                    // For interval tasks, reschedule with new execution time
-                    auto rescheduledTask = std::make_shared<ScheduledTask>(
-                        ScheduledTask::Type::Interval,
-                        nextTime,
-                        task->getTaskFactory(),
-                        task->getToken()
-                    );
-                    rescheduledTask->setInterval(task->getInterval());
-                    remainingTasks.push(rescheduledTask);
-                }
-                // One-time tasks are discarded after execution
-            }
-            else if (!task->isCancelled())
-            {
-                // Keep non-expired, non-cancelled tasks
-                remainingTasks.push(task);
-            }
-            // Cancelled tasks are discarded
-        }
-
-        scheduledTasks_ = std::move(remainingTasks);
-    }
-
-    return std::chrono::duration_cast<milliseconds>(steady_clock::now() - start);
-}
 
 inline void Scheduler::timerThreadFunction()
 {

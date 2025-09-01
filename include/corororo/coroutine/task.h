@@ -18,9 +18,8 @@ namespace CoroRoro
 // PromiseBase - Common base for all promise types
 //
 template <typename T>
-class PromiseBase
+struct PromiseBase
 {
-public:
     PromiseBase() = default;
     virtual ~PromiseBase() = default;
 
@@ -39,9 +38,8 @@ public:
 
 // Void specialization
 template <>
-class PromiseBase<void>
+struct PromiseBase<void>
 {
-public:
     PromiseBase() = default;
     virtual ~PromiseBase() = default;
 
@@ -56,18 +54,18 @@ public:
 };
 
 //
-// TaskBase - CRTP base class for Task and AsyncTask
+// TaskBase - Base struct for Task and AsyncTask
 //
-template <typename Derived, typename T, ThreadAffinity Affinity>
-class TaskBase
+template <typename T, typename PromiseType, ThreadAffinity Affinity>
+struct TaskBase
 {
-public:
     using ResultType = T;
+    using promise_type = PromiseType;
     static constexpr ThreadAffinity affinity = Affinity;
 
     TaskBase() noexcept = default;
 
-    TaskBase(std::coroutine_handle<typename Derived::promise_type> coroutine) noexcept
+    TaskBase(std::coroutine_handle<promise_type> coroutine) noexcept
         : handle_(coroutine)
     {
     }
@@ -104,7 +102,7 @@ public:
     }
 
     // Get the underlying coroutine handle for scheduler access
-    auto getHandle() const noexcept -> std::coroutine_handle<typename Derived::promise_type>
+    auto getHandle() const noexcept -> std::coroutine_handle<promise_type>
     {
         return handle_;
     }
@@ -148,27 +146,25 @@ public:
     }
 
 private:
-    std::coroutine_handle<typename Derived::promise_type> handle_ = nullptr;
+    std::coroutine_handle<promise_type> handle_ = nullptr;
 };
 
 //
 // Task - Main thread execution
 //
 template <typename T = void>
-class Task : public TaskBase<Task<T>, T, ThreadAffinity::Main>
+struct Task : TaskBase<T, detail::Promise<Task<T>, T>, ThreadAffinity::Main>
 {
-public:
-    using Base = TaskBase<Task<T>, T, ThreadAffinity::Main>;
+    using Base = TaskBase<T, detail::Promise<Task<T>, T>, ThreadAffinity::Main>;
     using promise_type = detail::Promise<Task<T>, T>;
     using Base::Base; // Inherit constructors
 };
 
 // Void specialization for Task
 template <>
-class Task<void> : public TaskBase<Task<void>, void, ThreadAffinity::Main>
+struct Task<void> : TaskBase<void, detail::Promise<Task<void>, void>, ThreadAffinity::Main>
 {
-public:
-    using Base = TaskBase<Task<void>, void, ThreadAffinity::Main>;
+    using Base = TaskBase<void, detail::Promise<Task<void>, void>, ThreadAffinity::Main>;
     using promise_type = detail::Promise<Task<void>, void>;
     using Base::Base; // Inherit constructors
 
@@ -182,21 +178,19 @@ public:
 // AsyncTask - Worker thread execution
 //
 template <typename T = void>
-class AsyncTask : public TaskBase<AsyncTask<T>, T, ThreadAffinity::Worker>
+struct AsyncTask : TaskBase<T, AsyncTaskPromise<T>, ThreadAffinity::Worker>
 {
-public:
-    using Base = TaskBase<AsyncTask<T>, T, ThreadAffinity::Worker>;
-    using promise_type = detail::Promise<AsyncTask<T>, T>;
+    using Base = TaskBase<T, AsyncTaskPromise<T>, ThreadAffinity::Worker>;
+    using promise_type = AsyncTaskPromise<T>;
     using Base::Base; // Inherit constructors
 };
 
 // Void specialization for AsyncTask
 template <>
-class AsyncTask<void> : public TaskBase<AsyncTask<void>, void, ThreadAffinity::Worker>
+struct AsyncTask<void> : TaskBase<void, AsyncTaskPromise<void>, ThreadAffinity::Worker>
 {
-public:
-    using Base = TaskBase<AsyncTask<void>, void, ThreadAffinity::Worker>;
-    using promise_type = detail::Promise<AsyncTask<void>, void>;
+    using Base = TaskBase<void, AsyncTaskPromise<void>, ThreadAffinity::Worker>;
+    using promise_type = AsyncTaskPromise<void>;
     using Base::Base; // Inherit constructors
 
     void await_resume() const noexcept

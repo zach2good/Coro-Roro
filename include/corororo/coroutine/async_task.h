@@ -14,7 +14,7 @@ namespace CoroRoro
 // AsyncTaskPromise for non-void types
 //
 template <typename T>
-struct AsyncTaskPromise final : public PromiseBase<T>
+struct AsyncTaskPromise : PromiseBase<T>
 {
     AsyncTaskPromise()
     {
@@ -23,22 +23,22 @@ struct AsyncTaskPromise final : public PromiseBase<T>
 
     auto get_return_object() noexcept -> AsyncTask<T>
     {
-        return {std::coroutine_handle<AsyncTaskPromise>::from_promise(*this)};
+        return {std::coroutine_handle<AsyncTaskPromise<T>>::from_promise(*this)};
     }
 
     void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
     {
-        data_ = std::move(value);
+        this->data_ = std::move(value);
     }
 
     void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>)
     {
-        data_ = value;
+        this->data_ = value;
     }
 
     auto result() -> T&
     {
-        return data_;
+        return this->data_;
     }
 
     auto initial_suspend() const noexcept -> std::suspend_always
@@ -61,7 +61,7 @@ struct AsyncTaskPromise final : public PromiseBase<T>
 // AsyncTaskPromise<void> specialization
 //
 template <>
-struct AsyncTaskPromise<void> final : public PromiseBase<void>
+struct AsyncTaskPromise<void> : PromiseBase<void>
 {
     AsyncTaskPromise()
     {
@@ -70,7 +70,7 @@ struct AsyncTaskPromise<void> final : public PromiseBase<void>
 
     auto get_return_object() noexcept -> AsyncTask<void>
     {
-        return {std::coroutine_handle<AsyncTaskPromise>::from_promise(*this)};
+        return {std::coroutine_handle<AsyncTaskPromise<void>>::from_promise(*this)};
     }
 
     void return_void() noexcept

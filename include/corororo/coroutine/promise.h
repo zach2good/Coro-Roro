@@ -133,13 +133,13 @@ namespace detail
 
     // Promise for tasks that return a value
     template <typename Task, typename T>
-    struct Promise final : public PromiseBase<T>
+    struct Promise : PromiseBase<T>
     {
         auto get_return_object() noexcept -> Task
         {
             // Set thread affinity based on Task type
             this->threadAffinity_ = Task::affinity;
-            return Task{std::coroutine_handle<Promise>::from_promise(*this)};
+            return Task{std::coroutine_handle<Promise<Task, T>>::from_promise(*this)};
         }
 
         auto initial_suspend() const noexcept -> std::suspend_never
@@ -154,12 +154,12 @@ namespace detail
 
         void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
         {
-            data_ = std::move(value);
+            this->data_ = std::move(value);
         }
 
         void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>)
         {
-            data_ = value;
+            this->data_ = value;
         }
 
         void unhandled_exception()
@@ -169,19 +169,19 @@ namespace detail
 
         auto result() -> T&
         {
-            return data_;
+            return this->data_;
         }
     };
 
     // Promise for tasks that return void
     template <typename Task>
-    struct Promise<Task, void> final : public PromiseBase<void>
+    struct Promise<Task, void> : PromiseBase<void>
     {
         auto get_return_object() noexcept -> Task
         {
             // Set thread affinity based on Task type
             this->threadAffinity_ = Task::affinity;
-            return Task{std::coroutine_handle<Promise>::from_promise(*this)};
+            return Task{std::coroutine_handle<Promise<Task, void>>::from_promise(*this)};
         }
 
         auto initial_suspend() const noexcept -> std::suspend_never
