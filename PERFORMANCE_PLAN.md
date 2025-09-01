@@ -2,7 +2,13 @@
 
 ## Executive Summary
 
-The Coro-Roro scheduler currently has **extremely high thread switching overhead** (23,338μs per switch) that makes it unsuitable for high-performance game server workloads requiring 2.5+ ticks per second across 20+ zones. This document outlines a comprehensive optimization strategy to achieve the target performance of **200ms per tick per zone**.
+The Coro-Roro scheduler currently has **extremely high thread switching overhead** (23,338μs per switch) that makes it unsuitable for high-performance game server workloads requiring 2.5+ ticks per second across 20+ zones. This document outlines a comprehensive optimization strategy to achieve the target performance of **400ms per tick per zone**.
+
+**Important Design Decision:** To achieve the required performance targets, we are willing to break the original encapsulation rule that kept Task and coroutine implementation completely separate from the scheduler. The handle-based optimizations require tight coupling between coroutines and scheduler for optimal performance.
+
+**Scheduler Reference Strategy:** We will avoid global, static, or thread_local scheduler references. Instead, the scheduler reference will be automatically propagated through the coroutine promise system. The parent coroutine's scheduler reference is automatically inherited by child coroutines, making it invisible to client code while maintaining clean dependency injection.
+
+**Task Execution Dependency:** Tasks (coroutines) will require a scheduler to function - they cannot be executed standalone. This is an acceptable tradeoff for the performance benefits of handle-based optimizations and automatic scheduler reference propagation.
 
 ## Current Performance Analysis
 
@@ -64,7 +70,7 @@ The Coro-Roro scheduler currently has **extremely high thread switching overhead
 ### Phase 1: Handle-Based Thread Switching
 
 #### Concept
-Replace complex coroutine context transfer with **simple handle transfer**:
+Replace complex coroutine context transfer with **simple handle transfer**. This requires tight coupling between coroutines and scheduler:
 
 ```cpp
 // Current: Complex context transfer
@@ -73,10 +79,11 @@ auto result = co_await [&]() -> AsyncTask<int> {
     co_return 42;
 }();
 
-// Proposed: Handle transfer
+// Proposed: Handle transfer (requires scheduler integration)
 auto result = co_await [&]() -> AsyncTask<int> {
     // Coroutine frame stays on main thread
     // Only handle gets transferred to worker
+    // Scheduler directly manages coroutine state
     co_return 42;
 }();
 ```
@@ -102,6 +109,8 @@ class HandleBasedScheduler {
     }
 };
 ```
+
+**Note:** This implementation requires the scheduler to have direct access to coroutine internals, breaking the original encapsulation boundary. The coroutine promise type must be modified to expose handles to the scheduler.
 
 #### Expected Benefits
 - **Memory transfer reduction:** 90%+
@@ -372,7 +381,8 @@ class AdaptiveSpinningScheduler {
 2. **Implement HandleBasedScheduler**
 3. **Modify AsyncTask promise type**
 4. **Create AsyncTaskAwaiter for handle transfer**
-5. **Test with existing syntax**
+5. **Implement automatic scheduler reference propagation in coroutine promise system**
+6. **Test with existing syntax**
 
 ### Phase 2: Advanced Optimizations
 1. **Implement direct handle transfer**
@@ -409,6 +419,8 @@ class AdaptiveSpinningScheduler {
 2. **Thread safety** - Coroutine state might not be thread-safe
 3. **Memory ownership** - Complex ownership semantics
 4. **Performance regression** - Optimizations might not work as expected
+5. **Scheduler reference propagation** - Complex promise system integration for automatic propagation
+6. **Task execution dependency** - Tasks cannot function without scheduler, breaking standalone usage patterns
 
 ### Mitigation Strategies
 1. **Comprehensive testing** - Extensive test coverage for all optimizations
@@ -423,6 +435,9 @@ class AdaptiveSpinningScheduler {
 4. **Zone scaling:** Support 100 zones (5x improvement over current 20)
 5. **Test suite:** All tests passing
 6. **Syntax compatibility:** No changes to existing code
+7. **Architecture:** Tight coupling between coroutines and scheduler is acceptable for performance
+8. **Dependency injection:** Scheduler reference automatically propagated through coroutine promise system, invisible to client code
+9. **Task execution:** Tasks require scheduler to function (acceptable tradeoff for performance)
 
 ## Conclusion
 
@@ -433,6 +448,12 @@ The key insight is that **handle-based thread switching** can dramatically reduc
 The implementation plan is designed to be **incremental** and **low-risk**, with each phase building on the previous one and providing measurable performance improvements. The final result should be a scheduler that can handle 100 zones efficiently (5x improvement over current 20 zones) while maintaining the elegant coroutine syntax that makes the codebase maintainable and readable.
 
 **Key Achievement:** Symmetric transfer operations already exceed the 2.5 ticks/second target, demonstrating that the coroutine approach is fundamentally sound. The challenge is optimizing thread switching to enable scaling to 100 zones.
+
+**Architectural Trade-off:** The performance requirements necessitate breaking the original encapsulation boundary between coroutines and scheduler. This tight coupling is essential for handle-based optimizations and represents a deliberate design decision to prioritize performance over architectural purity.
+
+**Clean Dependency Management:** Despite the tight coupling, we maintain clean dependency injection by automatically propagating scheduler references through the coroutine promise system. This approach is completely invisible to client code while ensuring testability and avoiding the complexity of global/static/thread_local scheduler management.
+
+**Execution Model:** Tasks (coroutines) are no longer standalone entities - they require a scheduler to execute. This fundamental change is justified by the dramatic performance improvements and the fact that the scheduler reference propagation is completely transparent to user code.
 
 ## Appendix: Test Results Summary
 
