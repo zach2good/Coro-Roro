@@ -83,37 +83,14 @@ struct TransferPolicy
 - ✅ **Better readability** - Clear `if constexpr` branching
 - ✅ **Same performance** - Template instantiation creates optimized code paths
 
-## Task and AsyncTask Simplification
+## Task and AsyncTask: Simplified Affinity-Based Design
 
-### Current Complex CRTP Structure (To Be Simplified)
+### Clean Type Aliases with Baked-in Affinity
 
-Currently, `Task<T>` and `AsyncTask<T>` are defined as separate classes with CRTP complexity:
-
-```cpp
-// Current: Complex CRTP inheritance
-template <typename T>
-struct Task : TaskBase<Task<T>, T, detail::TaskPromise<Task<T>, T>, ThreadAffinity::Main>
-{
-    using Base = TaskBase<Task<T>, T, detail::TaskPromise<Task<T>, T>, ThreadAffinity::Main>;
-    using promise_type = detail::TaskPromise<Task<T>, T>;
-    using Base::Base; // Inherit constructors
-};
-
-template <typename T>
-struct AsyncTask : TaskBase<AsyncTask<T>, T, AsyncTaskPromise<T>, ThreadAffinity::Worker>
-{
-    using Base = TaskBase<AsyncTask<T>, T, AsyncTaskPromise<T>, ThreadAffinity::Worker>;
-    using promise_type = AsyncTaskPromise<T>;
-    using Base::Base; // Inherit constructors
-};
-```
-
-### Proposed Simplified Alias Structure
-
-**Simplify to type aliases with baked-in affinity:**
+**Task and AsyncTask are now simple type aliases with affinity baked in at compile time:**
 
 ```cpp
-// Simplified: Clean aliases with affinity baked in
+// Clean aliases - affinity is embedded in the type
 template <typename T = void>
 using Task = TaskBase<ThreadAffinity::Main, T>;
 
@@ -121,103 +98,85 @@ template <typename T>
 using AsyncTask = TaskBase<ThreadAffinity::Worker, T>;
 ```
 
-### Benefits of the Simplified Approach
+### TaskBase: Unified Template with Compile-Time Affinity
 
-#### 1. **Reduced Code Duplication**
-- ❌ **Before**: Separate class definitions for Task and AsyncTask
-- ✅ **After**: Single TaskBase template, simple aliases
-
-#### 2. **Baked-in Affinity**
-- ❌ **Before**: Affinity passed through CRTP template parameters
-- ✅ **After**: Affinity directly embedded in the type alias
-
-#### 3. **Simplified Template Parameters**
-- ❌ **Before**: `TaskBase<Derived, T, PromiseType, Affinity>` (4 parameters)
-- ✅ **After**: `TaskBase<Affinity, T>` (2 parameters)
-
-#### 4. **Automatic Promise Type Selection**
 ```cpp
-// TaskBase automatically selects the right promise based on affinity
 template <ThreadAffinity Affinity, typename T>
-struct TaskBase {
+struct TaskBase
+{
+    static constexpr ThreadAffinity affinity = Affinity;  // Compile-time constant!
+
+    // Promise type automatically selected based on affinity
     using promise_type = std::conditional_t<Affinity == ThreadAffinity::Main,
                                            detail::TaskPromise<TaskBase<Affinity, T>, T>,
                                            AsyncTaskPromise<T>>;
-    // ... rest of implementation
-};
-```
 
-#### 5. **Eliminate Void Specialization with `if constexpr`**
-```cpp
-// Single TaskBase template handles both void and non-void cases
-template <ThreadAffinity Affinity, typename T>
-struct TaskBase {
-    // ... constructor and other members ...
-
-    // await_resume - handles both void and non-void cases with if constexpr
+    // Handle both void and non-void cases with if constexpr
     auto await_resume()
     {
         if constexpr (std::is_void_v<T>)
         {
-            // void case - no return value
-            return;
+            return;  // void case - no return value
         }
         else
         {
-            // non-void case - return result
-            return result();
+            return result();  // non-void case - return result
         }
     }
 
-    // result() method - only available for non-void types
+    // result() only available for non-void types
     template <typename U = T, typename = std::enable_if_t<!std::is_void_v<U>>>
     auto result() -> U&
     {
         return handle_.promise().result();
     }
+
+    // Direct member access for performance
+    std::coroutine_handle<promise_type> handle_;
 };
 ```
 
-#### 6. **Cleaner API**
-```cpp
-// User code remains the same, but implementation is simpler
-Task<int> mainTask = someFunction();
-AsyncTask<std::string> workerTask = otherFunction();
-```
+### Key Benefits of the Simplified Design
 
-### Implementation Plan
+#### 1. **Compile-Time Affinity Encoding**
+- ✅ `Task<T>` → Always runs on main thread
+- ✅ `AsyncTask<T>` → Always runs on worker threads
+- ✅ Zero runtime affinity checks
 
-1. **Update TaskBase Template**: Simplify from 4 parameters to 2
-2. **Eliminate Void Specialization**: Use `if constexpr` and `std::enable_if_t` instead of separate void specialization
-3. **Replace Class Definitions**: Convert Task/AsyncTask from classes to aliases
-4. **Update Promise Types**: Simplify promise type selection with `std::conditional_t`
-5. **Maintain API Compatibility**: User code remains unchanged
-6. **Update Documentation**: Reflect the simplified architecture
+#### 2. **Unified Template**
+- ✅ Single `TaskBase<Affinity, T>` template (2 parameters)
+- ✅ Eliminates CRTP complexity
+- ✅ Automatic promise type selection
 
-### Why This Simplification Matters
+#### 3. **Void/Non-Void Handling**
+- ✅ `if constexpr` handles both void and non-void cases
+- ✅ No separate specializations needed
+- ✅ Clean `result()` method with SFINAE
 
-- **Maintainability**: Less code to maintain and understand
-- **Performance**: Fewer template instantiations needed
-- **Eliminate Specializations**: Single template handles void and non-void cases with `if constexpr`
-- **Clarity**: Direct relationship between type and affinity
-- **Consistency**: Aligns with the single-template philosophy of TransferPolicy
+#### 4. **Performance Benefits**
+- ✅ Fewer template instantiations
+- ✅ Direct affinity access: `TaskType::affinity`
+- ✅ Better compiler optimization opportunities
 
-### Usage in Awaiters
-
-TransferPolicy integrates directly into awaiter implementations:
+### Usage Examples
 
 ```cpp
-// TaskInitialAwaiter - Main thread affinity
-auto await_suspend(std::coroutine_handle<Promise> coroutine) noexcept -> std::coroutine_handle<>
-{
-    return TransferPolicy<ThreadAffinity::Main, ThreadAffinity::Main>::transfer(scheduler_, coroutine);
-}
+// Main thread task - affinity known at compile time
+Task<int> mainTask = []() -> Task<int> {
+    co_return 42;  // Always executes on main thread
+};
 
-// AsyncTaskInitialAwaiter - Worker thread affinity
-auto await_suspend(std::coroutine_handle<Promise> coroutine) noexcept -> std::coroutine_handle<>
-{
-    return TransferPolicy<ThreadAffinity::Worker, ThreadAffinity::Worker>::transfer(scheduler_, coroutine);
-}
+// Worker thread task - affinity known at compile time
+AsyncTask<std::string> workerTask = []() -> AsyncTask<std::string> {
+    co_return "worker result";  // Always executes on worker thread
+};
+
+// Mixed execution - TransferPolicy handles cross-thread coordination
+Task<void> coordinator = []() -> Task<void> {
+    auto result1 = co_await workerTask;  // Main → Worker transfer
+    auto result2 = co_await mainTask;    // Worker → Main transfer
+    co_return;
+};
 ```
 
 ## Core Concepts
@@ -448,17 +407,11 @@ Every task type is encoded with its thread affinity at compile time:
 ```cpp
 // Task<T> always runs on main thread - KNOWN AT COMPILE TIME
 template <typename T>
-struct Task : TaskBase<Task<T>, T, TaskPromise<Task<T>, T>, ThreadAffinity::Main>
-{
-    static constexpr ThreadAffinity affinity = ThreadAffinity::Main;  // Compile-time constant!
-};
+using Task = TaskBase<ThreadAffinity::Main, T>;
 
 // AsyncTask<T> always runs on worker threads - KNOWN AT COMPILE TIME
 template <typename T>
-struct AsyncTask : TaskBase<AsyncTask<T>, T, AsyncTaskPromise<T>, ThreadAffinity::Worker>
-{
-    static constexpr ThreadAffinity affinity = ThreadAffinity::Worker;  // Compile-time constant!
-};
+using AsyncTask = TaskBase<ThreadAffinity::Worker, T>;
 ```
 
 **Result**: Zero runtime thread affinity lookups - everything is resolved at compile time!
@@ -494,14 +447,14 @@ Our TransferPolicy system implements automatic symmetric transfer for zero conte
 // TaskInitialAwaiter - Direct TransferPolicy for Main affinity
 auto await_suspend(std::coroutine_handle<Promise> coroutine) noexcept -> std::coroutine_handle<>
 {
-    // TransferPolicy handles symmetric transfer automatically
+    // Same affinity - no transfer needed, resume immediately
     return TransferPolicy<ThreadAffinity::Main, ThreadAffinity::Main>::transfer(scheduler_, coroutine);
 }
 
 // AsyncTaskInitialAwaiter - Direct TransferPolicy for Worker affinity
 auto await_suspend(std::coroutine_handle<Promise> coroutine) noexcept -> std::coroutine_handle<>
 {
-    // TransferPolicy handles symmetric transfer automatically
+    // Same affinity - no transfer needed, resume immediately
     return TransferPolicy<ThreadAffinity::Worker, ThreadAffinity::Worker>::transfer(scheduler_, coroutine);
 }
 ```
@@ -553,8 +506,8 @@ The system confirms compile-time routing through:
 // Ideal: Direct TransferPolicy usage - ZERO runtime overhead!
 auto await_suspend(std::coroutine_handle<Promise> coroutine) noexcept -> std::coroutine_handle<>
 {
-    // Direct template instantiation - known at compile time!
-    return TransferPolicy<ThreadAffinity::Main, ThreadAffinity::Main>::transfer(scheduler_, coroutine);
+    // Cross-thread transfer: Main → Worker (compile-time resolved!)
+    return TransferPolicy<ThreadAffinity::Main, ThreadAffinity::Worker>::transfer(scheduler_, coroutine);
 }
 ```
 
