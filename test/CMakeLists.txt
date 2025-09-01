@@ -34,31 +34,7 @@ CPMAddPackage(
   OPTIONS "INSTALL_GTEST OFF" "gtest_force_shared_crt"
 )
 
-add_executable(coro_roro_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/thread_verifier_tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_basic_tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_performance_tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_complex_workload_tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_pressure_tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/scheduler_interval_tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/worker_pool_tests.cpp
-)
-
-target_include_directories(coro_roro_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_link_libraries(coro_roro_tests PRIVATE Coro-Roro gtest gtest_main spdlog_header_only)
-
-if(MSVC)
-    target_compile_options(coro_roro_tests PRIVATE /W4 /WX /permissive-)
-else()
-    target_compile_options(coro_roro_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
-
-###
-
-add_executable(new_coro_roro_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_new_basic.cpp
-)
+# Old test targets removed - all tests have been ported to the new test suite
 
 # Add new comprehensive test suite
 add_executable(new_complex_workload_tests
@@ -85,12 +61,15 @@ add_executable(new_thread_verifier_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/new/thread_verifier_tests.cpp
 )
 
-target_include_directories(new_coro_roro_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/include
+add_executable(new_scheduler_interval_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/scheduler_interval_tests.cpp
 )
 
-target_link_libraries(new_coro_roro_tests PRIVATE corororo_new gtest gtest_main)
+add_executable(new_delayed_interval_basic_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/delayed_interval_basic_test.cpp
+)
+
+# References to old new_coro_roro_tests target removed
 
 # Configure new test executables
 foreach(test_target IN ITEMS
@@ -100,13 +79,15 @@ foreach(test_target IN ITEMS
     new_worker_pool_tests
     new_interval_tests
     new_thread_verifier_tests
+    new_scheduler_interval_tests
+    new_delayed_interval_basic_tests
 )
     target_include_directories(${test_target} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/include
     )
 
-    target_link_libraries(${test_target} PRIVATE corororo_new gtest gtest_main)
+    target_link_libraries(${test_target} PRIVATE Coro-Roro gtest gtest_main)
 
     if(MSVC)
         target_compile_options(${test_target} PRIVATE /W4 /WX /permissive-)
@@ -115,8 +96,4 @@ foreach(test_target IN ITEMS
     endif()
 endforeach()
 
-if(MSVC)
-    target_compile_options(new_coro_roro_tests PRIVATE /W4 /WX /permissive-)
-else()
-    target_compile_options(new_coro_roro_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
+# All old test targets removed - new test suite uses individual targets

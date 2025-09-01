@@ -1,194 +1,259 @@
 #pragma once
 
-#include <corororo/scheduler/schedulable_task.h>
-#include <corororo/util/macros.h>
-
+#include <corororo/coroutine/types.h>
 #include <atomic>
-#include <chrono>
-#include <condition_variable>
+#include <coroutine>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <thread>
 #include <vector>
 
-#include <concurrentqueue/concurrentqueue.h>
-
 namespace CoroRoro
 {
 
-// Forward declaration
+// Forward declarations
 class Scheduler;
+
+//
+// WorkQueue
+//
+//   Thread-safe queue for storing coroutine handles.
+//   Uses a simple mutex-protected queue for now.
+//
+class WorkQueue final
+{
+public:
+    // Enqueue a coroutine handle
+    void enqueue(std::coroutine_handle<> handle);
+
+    // Try to dequeue a coroutine handle
+    auto tryDequeue(std::coroutine_handle<>& handle) -> bool;
+
+    // Check if the queue is empty
+    auto empty() const -> bool;
+
+private:
+    mutable std::mutex mutex_;
+    std::queue<std::coroutine_handle<>> queue_;
+};
+
+//
+// WorkerThread
+//
+//   A worker thread that continuously processes coroutines from its work queue.
+//
+class WorkerThread final
+{
+public:
+    explicit WorkerThread(Scheduler* scheduler, size_t threadId);
+    ~WorkerThread();
+
+    // Start the worker thread
+    void start();
+
+    // Stop the worker thread
+    void stop();
+
+    // Enqueue work to this worker's queue
+    void enqueueWork(std::coroutine_handle<> handle);
+
+private:
+    // Main worker loop
+    void workerLoop();
+
+    // Reference to the scheduler
+    Scheduler* scheduler_;
+
+    // Thread ID for this worker
+    size_t threadId_;
+
+    // The actual worker thread
+    std::thread thread_;
+
+    // Work queue for this worker
+    WorkQueue workQueue_;
+
+    // Atomic flag for running state
+    std::atomic<bool> running_{false};
+};
 
 //
 // WorkerPool
 //
-//   Manages a pool of worker threads that execute tasks with WorkerThread affinity.
-//
-//   LOCK-FREE IMPLEMENTATION:
-//   - Uses moodycamel::ConcurrentQueue for lock-free task management
-//   - Eliminates mutex contention in worker pool
-//   - This was the remaining bottleneck in thread switching overhead
+//   Manages a pool of worker threads and distributes work among them.
 //
 class WorkerPool final
 {
 public:
-    explicit WorkerPool(size_t numThreads, Scheduler& scheduler, 
-                       std::chrono::milliseconds spinDuration = std::chrono::milliseconds(5));
+    explicit WorkerPool(Scheduler* scheduler, size_t numThreads);
     ~WorkerPool();
 
-    NO_MOVE_NO_COPY(WorkerPool);
+    // Start all worker threads
+    void start();
 
-    //
-    // Task management
-    //
+    // Stop all worker threads
+    void stop();
 
-    void enqueueTask(std::unique_ptr<ISchedulableTask> task);
-    void shutdown();
+    // Enqueue work to a specific worker
+    void enqueueToWorker(size_t workerId, std::coroutine_handle<> handle);
+
+    // Enqueue work to any available worker (round-robin distribution)
+    void enqueueToAnyWorker(std::coroutine_handle<> handle);
+
+    // Get the number of worker threads
+    auto getThreadCount() const -> size_t
+    {
+        return workers_.size();
+    }
 
 private:
-    //
-    // Worker thread management
-    //
+    // Reference to the scheduler
+    Scheduler* scheduler_;
 
-    void workerThreadLoop();
-    void routeTaskToScheduler(std::unique_ptr<ISchedulableTask> task);
+    // Vector of worker threads
+    std::vector<std::unique_ptr<WorkerThread>> workers_;
 
-    Scheduler&               scheduler_;
-    std::atomic<bool>        shuttingDown_{ false };
-    std::vector<std::thread> workerThreads_;
-    std::chrono::milliseconds spinDuration_;
-
-    // LOCK-FREE TASK QUEUE: Replace std::queue + mutex with moodycamel::ConcurrentQueue
-    // This eliminates the mutex contention bottleneck in worker pool
-    moodycamel::ConcurrentQueue<std::unique_ptr<ISchedulableTask>> workerThreadQueue_;
-    
-    // Note: workerThreadMutex_ removed - no longer needed for lock-free queue
-    // Note: workerTaskAvailable_ removed - no longer needed for lock-free queue
-    // The lock-free queue handles all synchronization internally
+    // Current worker index for round-robin distribution
+    std::atomic<size_t> currentWorker_{0};
 };
 
 //
-// Inline implementations
+// WorkQueue implementation
 //
-
-inline WorkerPool::WorkerPool(size_t numThreads, Scheduler& scheduler, std::chrono::milliseconds spinDuration)
-: scheduler_(scheduler), spinDuration_(spinDuration)
+inline void WorkQueue::enqueue(std::coroutine_handle<> handle)
 {
-    // Start worker threads
+    std::lock_guard<std::mutex> lock(mutex_);
+    queue_.push(handle);
+}
+
+inline auto WorkQueue::tryDequeue(std::coroutine_handle<>& handle) -> bool
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (queue_.empty())
+    {
+        return false;
+    }
+
+    handle = queue_.front();
+    queue_.pop();
+    return true;
+}
+
+inline auto WorkQueue::empty() const -> bool
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return queue_.empty();
+}
+
+//
+// WorkerThread implementation
+//
+inline WorkerThread::WorkerThread(Scheduler* scheduler, size_t threadId)
+    : scheduler_(scheduler)
+    , threadId_(threadId)
+{
+}
+
+inline WorkerThread::~WorkerThread()
+{
+    stop();
+}
+
+inline void WorkerThread::start()
+{
+    if (!running_.load())
+    {
+        running_.store(true);
+        thread_ = std::thread(&WorkerThread::workerLoop, this);
+    }
+}
+
+inline void WorkerThread::stop()
+{
+    running_.store(false);
+
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
+}
+
+inline void WorkerThread::enqueueWork(std::coroutine_handle<> handle)
+{
+    workQueue_.enqueue(handle);
+}
+
+inline void WorkerThread::workerLoop()
+{
+    while (running_.load())
+    {
+        std::coroutine_handle<> handle;
+
+        if (workQueue_.tryDequeue(handle))
+        {
+            if (handle && !handle.done())
+            {
+                // Resume the coroutine
+                handle.resume();
+            }
+        }
+        else
+        {
+            // No work available, yield to other threads
+            std::this_thread::yield();
+        }
+    }
+}
+
+//
+// WorkerPool implementation
+//
+inline WorkerPool::WorkerPool(Scheduler* scheduler, size_t numThreads)
+    : scheduler_(scheduler)
+{
+    // Create worker threads
     for (size_t i = 0; i < numThreads; ++i)
     {
-        workerThreads_.emplace_back(
-            [this]
-            {
-                workerThreadLoop();
-            });
+        workers_.push_back(std::make_unique<WorkerThread>(scheduler, i));
     }
 }
 
 inline WorkerPool::~WorkerPool()
 {
-    shutdown();
+    stop();
 }
 
-inline void WorkerPool::shutdown()
+inline void WorkerPool::start()
 {
-    // Set shutdown flag
-    shuttingDown_.store(true);
-
-    // Note: No need to notify threads - they will check shuttingDown_ flag
-    // The lock-free queue doesn't require condition variable notifications
-
-    // Join all worker threads
-    for (auto& thread : workerThreads_)
+    for (auto& worker : workers_)
     {
-        if (thread.joinable())
-        {
-            thread.join();
-        }
+        worker->start();
     }
 }
 
-inline void WorkerPool::enqueueTask(std::unique_ptr<ISchedulableTask> task)
+inline void WorkerPool::stop()
 {
-    // LOCK-FREE ENQUEUE: No mutex lock/unlock needed
-    // moodycamel::ConcurrentQueue handles all synchronization internally
-    workerThreadQueue_.enqueue(std::move(task));
-    
-    // Note: No condition variable notification needed
-    // Worker threads will poll the queue and find the task
+    for (auto& worker : workers_)
+    {
+        worker->stop();
+    }
 }
 
-inline void WorkerPool::workerThreadLoop()
+inline void WorkerPool::enqueueToWorker(size_t workerId, std::coroutine_handle<> handle)
 {
-    while (!shuttingDown_.load())
+    if (workerId < workers_.size())
     {
-        std::unique_ptr<ISchedulableTask> task;
-
-        // LOCK-FREE DEQUEUE: Try to get a task from worker queue
-        // No mutex lock/unlock or condition variable wait needed
-        if (workerThreadQueue_.try_dequeue(task))
-        {
-            // Execute the task if we got one
-            try
-            {
-                TaskState state = task->resume();
-
-                if (state == TaskState::Suspended)
-                {
-                    // Task suspended - route back to scheduler
-                    // Implementation moved to scheduler.h to avoid incomplete type issues
-                    routeTaskToScheduler(std::move(task));
-                }
-                // If completed or failed, task is destroyed automatically
-            }
-            catch (...)
-            {
-                // TODO: Add proper error handling
-            }
-
-            // WORKER SPINNING: After task completion, spin for a short time
-            // This reduces context switching when tasks arrive in bursts
-            auto spinStart = std::chrono::steady_clock::now();
-            while (std::chrono::steady_clock::now() - spinStart < spinDuration_)
-            {
-                // Try to get another task while spinning
-                if (workerThreadQueue_.try_dequeue(task))
-                {
-                    // Execute the task if we got one
-                    try
-                    {
-                        TaskState state = task->resume();
-
-                        if (state == TaskState::Suspended)
-                        {
-                            // Task suspended - route back to scheduler
-                            routeTaskToScheduler(std::move(task));
-                        }
-                        // If completed or failed, task is destroyed automatically
-                    }
-                    catch (...)
-                    {
-                        // TODO: Add proper error handling
-                    }
-
-                    // Reset spin timer - we found work, so keep spinning
-                    spinStart = std::chrono::steady_clock::now();
-                }
-                else
-                {
-                    // No task available - yield briefly while spinning
-                    std::this_thread::yield();
-                }
-            }
-        }
-        else
-        {
-            // No task available - yield to other threads
-            // This replaces the condition variable wait
-            std::this_thread::yield();
-        }
+        workers_[workerId]->enqueueWork(handle);
     }
+}
+
+inline void WorkerPool::enqueueToAnyWorker(std::coroutine_handle<> handle)
+{
+    // Round-robin distribution
+    size_t worker = currentWorker_.fetch_add(1) % workers_.size();
+    enqueueToWorker(worker, handle);
 }
 
 } // namespace CoroRoro

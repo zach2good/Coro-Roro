@@ -1,201 +1,149 @@
 #pragma once
 
 #include <corororo/coroutine/promise.h>
-#include <corororo/coroutine/task_state.h>
-#include <corororo/coroutine/thread_affinity.h>
 #include <corororo/coroutine/types.h>
-
 #include <coroutine>
-#include <exception>
 #include <utility>
-#include <variant>
 
 namespace CoroRoro
 {
 
 //
-// CoroutineTask
+// Task
 //
-//   Specialisation for tasks that return a value.
+//   A coroutine task that executes immediately on the current thread.
+//   Uses std::suspend_never for immediate execution.
 //
-template <ThreadAffinity Affinity, typename T>
-struct CoroutineTask final
+template <typename T = void>
+class Task final
 {
+public:
+    using promise_type = detail::Promise<Task, T>;
     using ResultType = T;
 
-    struct PromiseType final : PromiseTypeBase<Affinity, T>
+    Task() noexcept = default;
+    
+    Task(std::coroutine_handle<promise_type> coroutine) noexcept
+        : handle_{coroutine}
     {
-        std::variant<std::monostate, T, std::exception_ptr> result_;
-
-        auto get_return_object() -> CoroutineTask
+    }
+    
+    Task(Task const&) = delete;
+    Task& operator=(Task const&) = delete;
+    
+    Task(Task&& other) noexcept
+        : handle_{other.handle_}
+    {
+        other.handle_ = nullptr;
+    }
+    
+    Task& operator=(Task&& other) noexcept
+    {
+        if (this != &other)
         {
-            return { std::coroutine_handle<PromiseType>::from_promise(*this) };
-        }
-
-        void unhandled_exception()
-        {
-            this->result_.template emplace<std::exception_ptr>(std::current_exception());
-        }
-
-        void return_value(T&& value)
-        {
-            this->result_.template emplace<T>(std::move(value));
-        }
-
-        void return_value(const T& value)
-        {
-            this->result_.template emplace<T>(value);
-        }
-
-        auto result() -> T&
-        {
-            if (std::holds_alternative<std::exception_ptr>(this->result_))
+            if (handle_)
             {
-                std::rethrow_exception(std::get<std::exception_ptr>(this->result_));
+                handle_.destroy();
             }
-            return std::get<T>(this->result_);
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
         }
-    };
-
-    using promise_type = PromiseType;
-
-    std::coroutine_handle<PromiseType> handle_;
-
-    auto resume() -> TaskState
+        return *this;
+    }
+    
+    ~Task() noexcept
     {
-        if (done())
+        if (handle_)
         {
-            return state();
+            handle_.destroy();
         }
-
-        handle_.promise().context_->currentlyExecuting_.resume();
-
-        return state();
     }
 
-    auto done() const -> bool
+    // Get the underlying coroutine handle for scheduler access
+    auto getHandle() const noexcept -> std::coroutine_handle<promise_type>
     {
-        return handle_.promise().context_->isChainDone_;
+        return handle_;
     }
 
-    auto state() const -> TaskState
+    // Check if the task is done
+    auto done() const noexcept -> bool
     {
-        return handle_.promise().context_->activeState_;
+        return !handle_ || handle_.done();
     }
 
-    auto threadAffinity() const -> ThreadAffinity
-    {
-        return handle_.promise().context_->activeAffinity_;
-    }
-
+    // Get the result (only valid after the task is done)
     auto result() -> T&
     {
         return handle_.promise().result();
     }
 
-    auto get_result() -> T&
+    // Get the result (const version)
+    auto result() const -> const T&
+    {
+        return handle_.promise().result();
+    }
+
+
+
+    // Awaitable interface
+    auto await_ready() const noexcept -> bool
+    {
+        return done();
+    }
+
+    auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
+    {
+        return detail::await_suspend(handle_, coroutine);
+    }
+
+    auto await_resume() -> T&
     {
         return result();
     }
 
-    ~CoroutineTask()
-    {
-        if (handle_)
-        {
-            handle_.destroy();
-        }
-    }
-
-    CoroutineTask(std::coroutine_handle<PromiseType> h)
-    : handle_(h)
-    {
-    }
-
-    CoroutineTask(CoroutineTask&& other) noexcept
-    : handle_(std::exchange(other.handle_, nullptr))
-    {
-    }
-
-    CoroutineTask(const CoroutineTask&)            = delete;
-    CoroutineTask& operator=(const CoroutineTask&) = delete;
-    CoroutineTask& operator=(CoroutineTask&&)      = delete;
+private:
+    std::coroutine_handle<promise_type> handle_ = nullptr;
 };
 
-// Specialisation for tasks that return void.
-template <ThreadAffinity Affinity>
-struct CoroutineTask<Affinity, void> final
+// Specialization for void Task
+template <>
+class Task<void> final
 {
+public:
+    using promise_type = detail::Promise<Task<void>, void>;
     using ResultType = void;
 
-    struct PromiseType final : PromiseTypeBase<Affinity, void>
+    Task() noexcept = default;
+    
+    Task(std::coroutine_handle<promise_type> coroutine) noexcept
+        : handle_{coroutine}
     {
-        std::exception_ptr exception_ = nullptr;
-
-        auto get_return_object() -> CoroutineTask
+    }
+    
+    Task(Task const&) = delete;
+    Task& operator=(Task const&) = delete;
+    
+    Task(Task&& other) noexcept
+        : handle_{other.handle_}
+    {
+        other.handle_ = nullptr;
+    }
+    
+    Task& operator=(Task&& other) noexcept
+    {
+        if (this != &other)
         {
-            return { std::coroutine_handle<PromiseType>::from_promise(*this) };
-        }
-
-        void unhandled_exception()
-        {
-            exception_ = std::current_exception();
-        }
-
-        void return_void()
-        {
-        }
-
-        void result()
-        {
-            if (exception_)
+            if (handle_)
             {
-                std::rethrow_exception(exception_);
+                handle_.destroy();
             }
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
         }
-    };
-
-    using promise_type = PromiseType;
-
-    std::coroutine_handle<PromiseType> handle_;
-
-    auto resume() -> TaskState
-    {
-        if (done())
-        {
-            return state();
-        }
-
-        handle_.promise().context_->currentlyExecuting_.resume();
-
-        return state();
+        return *this;
     }
-
-    auto done() const -> bool
-    {
-        return handle_.promise().context_->isChainDone_;
-    }
-
-    auto state() const -> TaskState
-    {
-        return handle_.promise().context_->activeState_;
-    }
-
-    auto threadAffinity() const -> ThreadAffinity
-    {
-        return handle_.promise().context_->activeAffinity_;
-    }
-
-    void result() const
-    {
-        handle_.promise().result();
-    }
-
-    void get_result() const
-    {
-        result();
-    }
-
-    ~CoroutineTask()
+    
+    ~Task() noexcept
     {
         if (handle_)
         {
@@ -203,19 +151,36 @@ struct CoroutineTask<Affinity, void> final
         }
     }
 
-    CoroutineTask(std::coroutine_handle<PromiseType> h)
-    : handle_(h)
+    // Get the underlying coroutine handle for scheduler access
+    auto getHandle() const noexcept -> std::coroutine_handle<promise_type>
     {
+        return handle_;
     }
 
-    CoroutineTask(CoroutineTask&& other) noexcept
-    : handle_(std::exchange(other.handle_, nullptr))
+    // Check if the task is done
+    auto done() const noexcept -> bool
     {
+        return !handle_ || handle_.done();
     }
 
-    CoroutineTask(const CoroutineTask&)            = delete;
-    CoroutineTask& operator=(const CoroutineTask&) = delete;
-    CoroutineTask& operator=(CoroutineTask&&)      = delete;
+    // Awaitable interface
+    auto await_ready() const noexcept -> bool
+    {
+        return done();
+    }
+
+    auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
+    {
+        return detail::await_suspend(handle_, coroutine);
+    }
+
+    void await_resume() const noexcept
+    {
+        // void tasks don't return a value
+    }
+
+private:
+    std::coroutine_handle<promise_type> handle_ = nullptr;
 };
 
 } // namespace CoroRoro

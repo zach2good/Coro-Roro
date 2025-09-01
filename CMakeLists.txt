@@ -16,24 +16,7 @@ target_include_directories(Coro-Roro INTERFACE
 
 target_link_libraries(Coro-Roro INTERFACE Threads::Threads)
 
-# Create the new CoroRoro library
-add_library(corororo_new STATIC
-    include/corororo/scheduler/scheduler.cpp
-    include/corororo/scheduler/worker_pool.cpp
-)
-
-target_include_directories(corororo_new PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_link_libraries(corororo_new PUBLIC Threads::Threads)
-
-# Set library properties
-set_target_properties(corororo_new PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
+# The Coro-Roro library is now fully header-only
 
 option(ENABLE_TESTS "Build test executable" ON)
 

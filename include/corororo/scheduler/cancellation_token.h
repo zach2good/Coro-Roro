@@ -1,106 +1,45 @@
 #pragma once
 
 #include <atomic>
-#include <cstdint>
+#include <memory>
 
 namespace CoroRoro
 {
 
 //
-// Forward declarations
-//
-class Scheduler;
-
-//
 // CancellationToken
 //
-//   RAII token for cancelling scheduled tasks.
-//   The token automatically cancels its associated task on destruction.
-//   Can only be moved, not copied.
+//   Token that can be used to cancel scheduled tasks.
+//   When cancelled, the associated task will not execute.
 //
-class CancellationToken final
+
+class CancellationToken
 {
 public:
-    // Default constructor - creates invalid token
-    CancellationToken() = default;
+    CancellationToken()
+        : cancelled_(std::make_shared<std::atomic<bool>>(false))
+    {}
 
-    // RAII - auto cancellation on destruction
-    ~CancellationToken();
+    // Check if the token has been cancelled
+    bool isCancelled() const
+    {
+        return cancelled_->load();
+    }
 
-    CancellationToken(const CancellationToken&)            = delete;
-    CancellationToken& operator=(const CancellationToken&) = delete;
+    // Cancel the token (will prevent associated tasks from executing)
+    void cancel()
+    {
+        cancelled_->store(true);
+    }
 
-    CancellationToken(CancellationToken&& other) noexcept;
-    CancellationToken& operator=(CancellationToken&& other) noexcept;
-
-    //
-    // Public interface
-    //
-
-    void cancel();
-    auto isValid() const -> bool;
+    // Reset the token to non-cancelled state
+    void reset()
+    {
+        cancelled_->store(false);
+    }
 
 private:
-    friend class Scheduler;
-
-    using TaskId = std::uint64_t;
-
-    CancellationToken(Scheduler* scheduler, TaskId taskId);
-
-    Scheduler*        scheduler_{ nullptr };
-    TaskId            taskId_{ 0 };
-    std::atomic<bool> cancelled_{ false };
+    std::shared_ptr<std::atomic<bool>> cancelled_;
 };
-
-//
-// Inline implementations
-//
-
-inline auto CancellationToken::isValid() const -> bool
-{
-    return scheduler_ != nullptr && !cancelled_.load();
-}
-
-inline CancellationToken::CancellationToken(Scheduler* scheduler, TaskId taskId)
-: scheduler_(scheduler)
-, taskId_(taskId)
-, cancelled_(false)
-{
-}
-
-inline CancellationToken::CancellationToken(CancellationToken&& other) noexcept
-: scheduler_(std::exchange(other.scheduler_, nullptr))
-, taskId_(std::exchange(other.taskId_, 0))
-, cancelled_(other.cancelled_.load())
-{
-    other.cancelled_ = true; // Mark moved-from token as cancelled
-}
-
-inline CancellationToken& CancellationToken::operator=(CancellationToken&& other) noexcept
-{
-    if (this != &other)
-    {
-        // Cancel current task if moving over an active token
-        if (isValid())
-        {
-            cancel();
-        }
-
-        scheduler_ = std::exchange(other.scheduler_, nullptr);
-        taskId_    = std::exchange(other.taskId_, 0);
-        cancelled_ = other.cancelled_.load();
-
-        other.cancelled_ = true; // Mark moved-from token as cancelled
-    }
-    return *this;
-}
-
-inline CancellationToken::~CancellationToken()
-{
-    if (isValid())
-    {
-        cancel();
-    }
-}
 
 } // namespace CoroRoro

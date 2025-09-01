@@ -5,23 +5,28 @@
 namespace CoroRoro
 {
 
-//
-// runCoroutineInline
-//
-//   A helper for if you just want to run the entirety of a coroutine inline.
-//
-template <typename Coroutine>
-auto runCoroutineInline(Coroutine&& coro)
+// Simple utility to run a coroutine inline
+template <typename T>
+T runCoroutineInline(Task<T>&& task)
 {
-    while (!coro.done())
+    while (!task.await_ready())
     {
-        coro.resume();
+        // Resume the coroutine until it's done
+        task.resume();
     }
+    return task.await_resume();
+}
 
-    if constexpr (!std::is_void_v<decltype(coro.result())>)
+// Specialization for void tasks
+template <>
+void runCoroutineInline(Task<void>&& task)
+{
+    while (!task.await_ready())
     {
-        return coro.result();
+        // Resume the coroutine until it's done
+        task.resume();
     }
+    task.await_resume();
 }
 
 } // namespace CoroRoro
