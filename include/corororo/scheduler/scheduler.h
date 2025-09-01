@@ -17,11 +17,7 @@ namespace CoroRoro {
 
 // Forward declarations for friend classes
 namespace detail {
-    template <ThreadAffinity Affinity>
     struct InitialAwaiter;
-
-    template <ThreadAffinity Affinity>
-    struct FinalAwaiter;
 }
 
 // TransferPolicy will be implemented later once basic functionality works
@@ -62,12 +58,12 @@ public:
     // Get main thread ID
     auto getMainThreadId() const -> std::thread::id { return mainThreadId_; }
 
-    // Friend declarations for awaiters that need access to private methods
+    // TransferPolicy support methods (public for TransferPolicy access)
     template <ThreadAffinity Affinity>
-    friend struct detail::InitialAwaiter;
+    auto getNextTaskWithAffinity() -> std::coroutine_handle<>;
 
-    template <ThreadAffinity Affinity>
-    friend struct detail::FinalAwaiter;
+    // Friend declarations for awaiters that need access to private methods
+    friend struct detail::InitialAwaiter;
 
 private:
     // Templated methods for generic awaiters (private - accessed via friends)
@@ -79,7 +75,7 @@ private:
 
     // TransferPolicy support methods
     template <ThreadAffinity Affinity>
-    auto getNextTaskWithAffinity() -> std::coroutine_handle<>;
+    void scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept;
 
     // Helper methods
     auto scheduleMainThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
@@ -103,7 +99,7 @@ private:
 // Template implementations
 //
 
-template <typename TaskType>
+    template <typename TaskType>
 void Scheduler::schedule(TaskType task) {
     // Extract handle and route to appropriate queue
     auto handle = task.handle_;
@@ -198,6 +194,15 @@ auto Scheduler::finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std:
 }
 
 template <ThreadAffinity Affinity>
+void Scheduler::scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept {
+    if constexpr (Affinity == ThreadAffinity::Main) {
+        scheduleMainThreadTask(handle);
+    } else {
+        scheduleWorkerThreadTask(handle);
+    }
+}
+
+template <ThreadAffinity Affinity>
 auto Scheduler::getNextTaskWithAffinity() -> std::coroutine_handle<> {
     if constexpr (Affinity == ThreadAffinity::Main) {
         // Get next task from main thread queue
@@ -211,6 +216,32 @@ auto Scheduler::getNextTaskWithAffinity() -> std::coroutine_handle<> {
     } else {
         // Get next task from worker pool
         return workerPool_->dequeueFromAnyWorker();
+    }
+}
+
+// The TransferPolicy is a compile-time mechanism to determine how to transition
+// from one coroutine to another based on their thread affinities. It is the
+// core of the efficient scheduling logic.template <ThreadAffinity CurrentAffinity, ThreadAffinity NextAffinity>
+[[nodiscard]] inline auto TransferPolicy<CurrentAffinity, NextAffinity>::transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
+{
+    if constexpr (CurrentAffinity == NextAffinity)
+    {
+        // OPTIMIZATION: The current and next tasks have the same thread affinity.
+        // There's no need to go through the scheduler's queue. We can perform a
+        // direct symmetric transfer by returning the handle to the next task,
+        // which the runtime will immediately resume.
+        return handle;
+    }
+    else
+    {
+        // AFFINITY CHANGE: The tasks have different affinities. We must suspend
+        // the current execution flow and involve the scheduler.
+        // 1. Schedule the new task on the queue corresponding to its affinity.
+        scheduler->scheduleHandleWithAffinity<NextAffinity>(handle);
+
+        // 2. Symmetrically transfer to the next available task on the *current*
+        //    thread's queue. This keeps the current thread busy.
+        return scheduler->template getNextTaskWithAffinity<CurrentAffinity>();
     }
 }
 
