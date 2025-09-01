@@ -1,29 +1,16 @@
 #pragma once
 
 //
-// CoroRoro Library
+// CoroRoro New Implementation
 //
-//   A convenience header that includes the whole CoroRoro library.
+//   A convenience header that includes the new CoroRoro implementation.
 //
 
-#include <corororo/coroutine/awaiter.h>
-#include <corororo/coroutine/execution_context.h>
-#include <corororo/coroutine/promise.h>
-#include <corororo/coroutine/task.h>
-#include <corororo/coroutine/task_state.h>
-#include <corororo/coroutine/thread_affinity.h>
-#include <corororo/coroutine/types.h>
+#include <corororo/coroutine/promise.hpp>
+#include <corororo/coroutine/task.hpp>
+#include <corororo/coroutine/async_task.hpp>
+#include <corororo/coroutine/types.hpp>
 
-#include <corororo/scheduler/cancellation_token.h>
-#include <corororo/scheduler/delayed_task.h>
-#include <corororo/scheduler/forced_affinity_task.h>
-#include <corororo/scheduler/forced_thread_affinity.h>
-#include <corororo/scheduler/interval_task.h>
-#include <corororo/scheduler/schedulable_task.h>
-#include <corororo/scheduler/scheduled_task.h>
-#include <corororo/scheduler/scheduler.h>
-#include <corororo/scheduler/task_id.h>
-#include <corororo/scheduler/worker_pool.h>
+#include <corororo/scheduler/scheduler.hpp>
+#include <corororo/scheduler/worker_pool.hpp>
 
-#include <corororo/util/macros.h>
-#include <corororo/util/run_coroutine_inline.h>

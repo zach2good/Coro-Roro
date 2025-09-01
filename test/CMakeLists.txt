@@ -53,3 +53,70 @@ if(MSVC)
 else()
     target_compile_options(coro_roro_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
+
+###
+
+add_executable(new_coro_roro_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_new_basic.cpp
+)
+
+# Add new comprehensive test suite
+add_executable(new_complex_workload_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/complex_workload_tests.cpp
+)
+
+add_executable(new_performance_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/performance_tests.cpp
+)
+
+add_executable(new_pressure_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/pressure_tests.cpp
+)
+
+add_executable(new_worker_pool_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/worker_pool_tests.cpp
+)
+
+add_executable(new_interval_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/interval_tests.cpp
+)
+
+add_executable(new_thread_verifier_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/new/thread_verifier_tests.cpp
+)
+
+target_include_directories(new_coro_roro_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(new_coro_roro_tests PRIVATE corororo_new gtest gtest_main)
+
+# Configure new test executables
+foreach(test_target IN ITEMS
+    new_complex_workload_tests
+    new_performance_tests
+    new_pressure_tests
+    new_worker_pool_tests
+    new_interval_tests
+    new_thread_verifier_tests
+)
+    target_include_directories(${test_target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(${test_target} PRIVATE corororo_new gtest gtest_main)
+
+    if(MSVC)
+        target_compile_options(${test_target} PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(${test_target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+endforeach()
+
+if(MSVC)
+    target_compile_options(new_coro_roro_tests PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(new_coro_roro_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
