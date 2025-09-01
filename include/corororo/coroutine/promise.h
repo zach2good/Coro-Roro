@@ -133,12 +133,12 @@ namespace detail
 
     // Promise for tasks that return a value
     template <typename Task, typename T>
-    struct Promise final : public PromiseBase
+    struct Promise final : public PromiseBase<T>
     {
-        T data_;
-
         auto get_return_object() noexcept -> Task
         {
+            // Set thread affinity based on Task type
+            this->threadAffinity_ = Task::affinity;
             return Task{std::coroutine_handle<Promise>::from_promise(*this)};
         }
 
@@ -175,10 +175,12 @@ namespace detail
 
     // Promise for tasks that return void
     template <typename Task>
-    struct Promise<Task, void> final : public PromiseBase
+    struct Promise<Task, void> final : public PromiseBase<void>
     {
         auto get_return_object() noexcept -> Task
         {
+            // Set thread affinity based on Task type
+            this->threadAffinity_ = Task::affinity;
             return Task{std::coroutine_handle<Promise>::from_promise(*this)};
         }
 

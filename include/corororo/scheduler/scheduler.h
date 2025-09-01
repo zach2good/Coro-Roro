@@ -63,7 +63,21 @@ public:
     // is available. This is the core handle-based scheduling method.
     void scheduleHandle(std::coroutine_handle<> coroutine);
 
-    // Legacy schedule method for backward compatibility
+    // Schedule method for Task types (main thread)
+    template <typename T>
+    void schedule(Task<T>&& task)
+    {
+        scheduleTask(std::move(task), ThreadAffinity::Main);
+    }
+
+    // Schedule method for AsyncTask types (worker threads)
+    template <typename T>
+    void schedule(AsyncTask<T>&& task)
+    {
+        scheduleTask(std::move(task), ThreadAffinity::Worker);
+    }
+
+    // Generic schedule method for any task type
     template <typename TaskType>
     void schedule(TaskType&& task)
     {
@@ -74,6 +88,36 @@ public:
             // Propagate scheduler reference to the task's promise
             handle.promise().scheduler_ = this;
             scheduleHandle(handle);
+        }
+    }
+
+private:
+    // Helper method to schedule tasks with known affinity
+    template <typename TaskType>
+    void scheduleTask(TaskType&& task, ThreadAffinity affinity)
+    {
+        auto handle = task.getHandle();
+        if (handle)
+        {
+            // Propagate scheduler reference to the task's promise
+            handle.promise().scheduler_ = this;
+            scheduleHandleWithAffinity(handle, affinity);
+        }
+    }
+
+    // Schedule handle with explicit affinity (compile-time optimization)
+    void scheduleHandleWithAffinity(std::coroutine_handle<> handle, ThreadAffinity affinity)
+    {
+        if (affinity == ThreadAffinity::Main)
+        {
+            // Schedule on main thread
+            std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
+            mainThreadTasks_.push_back(handle);
+        }
+        else
+        {
+            // Schedule on worker thread
+            workerPool_->enqueueToAnyWorker(handle);
         }
     }
 
@@ -374,21 +418,21 @@ inline void Scheduler::timerThreadFunction()
     }
 }
 
-inline ThreadAffinity Scheduler::determineThreadAffinity(std::coroutine_handle<>)
+inline ThreadAffinity Scheduler::determineThreadAffinity(std::coroutine_handle<> coroutine)
 {
-    // Use a heuristic: check if the current thread is the main thread
-    // If we're being called from the main thread, assume this is a main thread task
-    // If we're being called from a worker thread, assume this is a worker thread task
-    if (std::this_thread::get_id() == mainThreadId_)
+    if (!coroutine)
     {
-        // We're on the main thread, so this coroutine should continue on main thread
-        return ThreadAffinity::Main;
+        return ThreadAffinity::Main; // Default to main thread
     }
-    else
+
+    // Use heuristic based on current thread context
+    // This is used for generic coroutine handles where we don't know the type at compile time
+    if (std::this_thread::get_id() != mainThreadId_)
     {
-        // We're on a worker thread, so this coroutine should run on worker threads
         return ThreadAffinity::Worker;
     }
+
+    return ThreadAffinity::Main;
 }
 
 } // namespace CoroRoro

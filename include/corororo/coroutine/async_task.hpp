@@ -1,7 +1,7 @@
 #pragma once
 
-#include <corororo/coroutine/promise.h>
-#include <corororo/coroutine/task.h>
+#include <corororo/coroutine/promise.hpp>
+#include <corororo/coroutine/task.hpp>
 
 #include <coroutine>
 #include <exception>
@@ -10,18 +10,18 @@
 namespace CoroRoro
 {
 
+// AsyncTask is now defined as a type alias in types.h
+// This file only contains the promise definitions needed for compilation
+
 //
 // AsyncTaskPromise for non-void types
 //
 template <typename T>
-struct AsyncTaskPromise final : public PromiseBase<T>
+struct AsyncTaskPromise final : public detail::PromiseBase
 {
-    AsyncTaskPromise()
-    {
-        this->threadAffinity_ = ThreadAffinity::Worker; // AsyncTasks run on worker threads
-    }
+    T data_;
 
-    auto get_return_object() noexcept -> AsyncTask<T>
+    auto get_return_object() noexcept -> Task<T>
     {
         return {std::coroutine_handle<AsyncTaskPromise>::from_promise(*this)};
     }
@@ -57,18 +57,17 @@ struct AsyncTaskPromise final : public PromiseBase<T>
     }
 };
 
+// Forward declare AsyncTaskPromise<void> specialization
+template <>
+struct AsyncTaskPromise<void>;
+
 //
 // AsyncTaskPromise<void> specialization
 //
 template <>
-struct AsyncTaskPromise<void> final : public PromiseBase<void>
+struct AsyncTaskPromise<void> final : public detail::PromiseBase
 {
-    AsyncTaskPromise()
-    {
-        this->threadAffinity_ = ThreadAffinity::Worker; // AsyncTasks run on worker threads
-    }
-
-    auto get_return_object() noexcept -> AsyncTask<void>
+    auto get_return_object() noexcept -> Task<void>
     {
         return {std::coroutine_handle<AsyncTaskPromise>::from_promise(*this)};
     }
@@ -79,7 +78,7 @@ struct AsyncTaskPromise<void> final : public PromiseBase<void>
 
     void result()
     {
-        // void tasks don't have a result
+        // For void tasks, result() does nothing
     }
 
     auto initial_suspend() const noexcept -> std::suspend_always

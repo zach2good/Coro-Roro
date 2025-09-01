@@ -455,3 +455,71 @@ TEST_F(SchedulerIntervalTest, MultipleIntervalTasksDifferentIntervals)
     EXPECT_GE(fastExecutionCount.load(), expectedFastExecutions * 0.5);
     EXPECT_GE(slowExecutionCount.load(), expectedSlowExecutions * 0.5);
 }
+
+// ============================================================================
+// CRITICAL TEST: Interval Task with Complex Suspension Pattern
+// ============================================================================
+// PURPOSE: Test interval tasks with complex suspension patterns similar to LandSandBoat
+// BACKGROUND: Tests Task->Task suspension chains that should reschedule properly
+TEST_F(SchedulerIntervalTest, IntervalTaskWithComplexSuspension)
+{
+    const auto interval = std::chrono::milliseconds(100);
+    std::atomic<int> executionCount{0};
+    std::vector<std::chrono::steady_clock::time_point> executionTimes;
+
+    // Create interval task with nested Task suspensions
+    auto complexIntervalTask = [&]() -> Task<void> {
+        executionTimes.push_back(std::chrono::steady_clock::now());
+        executionCount.fetch_add(1);
+
+        // Simulate nested work with suspensions
+        auto nestedWork = [&]() -> Task<void> {
+            // Simulate some work that might involve I/O or computation
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+            auto deeperWork = [&]() -> Task<void> {
+                // Simulate even deeper work
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                co_return;
+            };
+
+            co_await deeperWork();
+            co_return;
+        };
+
+        co_await nestedWork();
+        co_return;
+    };
+
+    const auto startTime = std::chrono::steady_clock::now();
+
+    // Schedule the interval task
+    auto token = scheduler_->scheduleInterval(interval, complexIntervalTask);
+
+    // Let it run for several intervals
+    auto testDuration = interval * 8 + std::chrono::milliseconds(200);
+    auto endTime = startTime + testDuration;
+
+    while (std::chrono::steady_clock::now() < endTime && executionCount.load() < 6) {
+        scheduler_->runExpiredTasks();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // Cancel the task
+    token.cancel();
+
+    // Allow any remaining tasks to complete
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    scheduler_->runExpiredTasks();
+
+    const auto finalExecutionCount = executionCount.load();
+
+    std::cout << "Interval Task with Complex Suspension Test:" << std::endl;
+    std::cout << "===========================================" << std::endl;
+    std::cout << "Interval: " << interval.count() << "ms" << std::endl;
+    std::cout << "Executions: " << finalExecutionCount << std::endl;
+
+    // Critical assertions for complex interval behavior:
+    EXPECT_GE(finalExecutionCount, 4) << "Complex interval task should reschedule and execute multiple times";
+    EXPECT_LE(finalExecutionCount, 10) << "Should not have excessive executions due to proper timing";
+}

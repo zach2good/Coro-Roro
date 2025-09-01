@@ -8,7 +8,7 @@
 
 #include <corororo/coroutine/promise.h>
 #include <corororo/coroutine/task.h>
-// #include <corororo/coroutine/async_task.h> // Temporarily disabled due to compilation issues
+#include <corororo/coroutine/async_task.h>
 #include <corororo/coroutine/types.h>
 
 #include <corororo/scheduler/scheduler.h>

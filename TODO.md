@@ -1,4 +1,4 @@
-- Please go through all the git commit history since the beginning of the repo, looking at the test/ folder specifically, to make sure you capture the historical tests where we were debugging interval tasks not rescheduling, and then the tests which exposed the long tick times. It's important this behaviour is captured and reproduced so we can test against it. Please write your findings in a document.
+- I have gone through the git history to pull out the headers from tests that capture important bugs and behaviours for the scheduler. I have put them in OLD_TEST_HEADERS. Please read this file and understand, and update our tests to capture this behaviour if needed.
 - Make sure the delayed and interval task system (with cancellation tokens) is correctly captures in tests, and then implemented.
 - Make sure the library is organised into *.h files, and is header only, with include/corororo.h being the main header for clients to use.
 - Fix all crashes, the tests must pass and be stable before we continue.

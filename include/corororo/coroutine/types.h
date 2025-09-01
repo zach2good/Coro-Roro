@@ -12,4 +12,11 @@ enum class ThreadAffinity : uint32_t
     Worker = 2
 };
 
+// Forward declarations
+template <typename T = void>
+class Task;
+
+template <typename T = void>
+class AsyncTask;
+
 } // namespace CoroRoro
