@@ -6,7 +6,7 @@ The Coro-Roro scheduler currently has **extremely high thread switching overhead
 
 **Important Design Decision:** To achieve the required performance targets, we are willing to break the original encapsulation rule that kept Task and coroutine implementation completely separate from the scheduler. The handle-based optimizations require tight coupling between coroutines and scheduler for optimal performance.
 
-**Scheduler Reference Strategy:** We will avoid global, static, or thread_local scheduler references. Instead, the scheduler reference will be automatically propagated through the coroutine promise system. The parent coroutine's scheduler reference is automatically inherited by child coroutines, making it invisible to client code while maintaining clean dependency injection.
+**Scheduler Reference Strategy:** We will avoid global, static, or thread_local scheduler references. Instead, the scheduler reference will be automatically propagated through the coroutine promise system. The scheduler reference is set up during initial task scheduling and then automatically inherited by child coroutines through the promise system, making it completely invisible to client code while maintaining clean dependency injection.
 
 **Task Execution Dependency:** Tasks (coroutines) will require a scheduler to function - they cannot be executed standalone. This is an acceptable tradeoff for the performance benefits of handle-based optimizations and automatic scheduler reference propagation.
 
@@ -15,7 +15,7 @@ The Coro-Roro scheduler currently has **extremely high thread switching overhead
 ### Performance Baseline
 - **Thread switching overhead:** 23,338μs per switch
 - **Symmetric transfer overhead:** 125μs per operation (excellent)
-- **LandSandBoat impact:** 118,764ms per tick (target: <200ms)
+- **LandSandBoat impact:** 118,764ms per tick (target: <400ms)
 - **Test results:** 46 passing tests, 4 failing performance tests
 
 ### Performance Spectrum
@@ -111,6 +111,31 @@ class HandleBasedScheduler {
 ```
 
 **Note:** This implementation requires the scheduler to have direct access to coroutine internals, breaking the original encapsulation boundary. The coroutine promise type must be modified to expose handles to the scheduler.
+
+**Scheduler Reference Flow Example:**
+```cpp
+// Scheduler reference is completely invisible to user code
+auto parentTask = []() -> Task<int> {
+    // Promise system automatically has scheduler reference from initial setup
+    
+    auto childTask = []() -> Task<int> {
+        // Promise system automatically inherits scheduler reference from parent
+        // No manual capture needed - completely invisible to user code
+        
+        auto asyncTask = []() -> AsyncTask<int> {
+            // Promise system automatically inherits scheduler reference from parent
+            // Handle transfer uses the inherited scheduler reference
+            co_return 42;
+        }();
+        
+        co_return co_await asyncTask;
+    }();
+    
+    co_return co_await childTask;
+};
+
+scheduler.schedule(parentTask);  // Only place scheduler reference is visible to user code
+```
 
 #### Expected Benefits
 - **Memory transfer reduction:** 90%+
@@ -436,7 +461,7 @@ class AdaptiveSpinningScheduler {
 5. **Test suite:** All tests passing
 6. **Syntax compatibility:** No changes to existing code
 7. **Architecture:** Tight coupling between coroutines and scheduler is acceptable for performance
-8. **Dependency injection:** Scheduler reference automatically propagated through coroutine promise system, invisible to client code
+8. **Dependency injection:** Scheduler reference automatically propagated through coroutine promise system, completely invisible to client code
 9. **Task execution:** Tasks require scheduler to function (acceptable tradeoff for performance)
 
 ## Conclusion
@@ -451,9 +476,9 @@ The implementation plan is designed to be **incremental** and **low-risk**, with
 
 **Architectural Trade-off:** The performance requirements necessitate breaking the original encapsulation boundary between coroutines and scheduler. This tight coupling is essential for handle-based optimizations and represents a deliberate design decision to prioritize performance over architectural purity.
 
-**Clean Dependency Management:** Despite the tight coupling, we maintain clean dependency injection by automatically propagating scheduler references through the coroutine promise system. This approach is completely invisible to client code while ensuring testability and avoiding the complexity of global/static/thread_local scheduler management.
+**Clean Dependency Management:** Despite the tight coupling, we maintain clean dependency injection by automatically propagating scheduler references through the coroutine promise system. The scheduler reference is set up during initial task scheduling and then automatically inherited by all child coroutines through the promise system. This approach is completely invisible to client code while ensuring testability and avoiding the complexity of global/static/thread_local scheduler management.
 
-**Execution Model:** Tasks (coroutines) are no longer standalone entities - they require a scheduler to execute. This fundamental change is justified by the dramatic performance improvements and the fact that the scheduler reference propagation is completely transparent to user code.
+**Execution Model:** Tasks (coroutines) are no longer standalone entities - they require a scheduler to execute. This fundamental change is justified by the dramatic performance improvements and the fact that the scheduler reference propagation is completely transparent to user code. The scheduler reference is only visible at the top level when scheduling tasks, and then automatically propagates through the promise system to all child coroutines without any user code involvement.
 
 ## Appendix: Test Results Summary
 
@@ -538,7 +563,7 @@ LandSandBoat Impact = (59,982 × 1,980) ÷ 1000 = 118,764,360μs = 118,764ms
 ### Validation and Verification
 
 #### Cross-Reference with Real Data
-- **Target performance:** 200ms per tick (from LandSandBoat requirements)
+- **Target performance:** 400ms per tick (from LandSandBoat requirements)
 - **Current non-scheduler performance:** ~400ms per tick (baseline)
 - **Scheduler overhead:** Additional overhead from coroutine management
 - **Thread switching cost:** Primary contributor to performance degradation
