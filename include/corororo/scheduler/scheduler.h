@@ -1,6 +1,5 @@
 #pragma once
 
-#include <corororo/coroutine/task.h>
 #include <corororo/coroutine/types.h>
 #include <corororo/scheduler/worker_pool.h>
 #include <atomic>
@@ -18,12 +17,14 @@ namespace CoroRoro {
 
 // Forward declarations for friend classes
 namespace detail {
-    template <typename DerivedPromise>
-    struct FinalAwaiter;
+    template <ThreadAffinity Affinity>
+    struct InitialAwaiter;
 
-    struct TaskInitialAwaiter;
-    struct TaskFinalAwaiter;
+    template <ThreadAffinity Affinity>
+    struct FinalAwaiter;
 }
+
+// TransferPolicy will be implemented later once basic functionality works
 
 using steady_clock = std::chrono::steady_clock;
 using time_point = std::chrono::time_point<steady_clock>;
@@ -62,11 +63,11 @@ public:
     auto getMainThreadId() const -> std::thread::id { return mainThreadId_; }
 
     // Friend declarations for awaiters that need access to private methods
-    template <typename DerivedPromise>
-    friend struct detail::FinalAwaiter;
+    template <ThreadAffinity Affinity>
+    friend struct detail::InitialAwaiter;
 
-    friend struct detail::TaskInitialAwaiter;
-    friend struct detail::TaskFinalAwaiter;
+    template <ThreadAffinity Affinity>
+    friend struct detail::FinalAwaiter;
 
 private:
     // Templated methods for generic awaiters (private - accessed via friends)
@@ -75,6 +76,10 @@ private:
 
     template <ThreadAffinity Affinity>
     auto finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
+
+    // TransferPolicy support methods
+    template <ThreadAffinity Affinity>
+    auto getNextTaskWithAffinity() -> std::coroutine_handle<>;
 
     // Helper methods
     auto scheduleMainThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
@@ -102,6 +107,7 @@ template <typename TaskType>
 void Scheduler::schedule(TaskType task) {
     // Extract handle and route to appropriate queue
     auto handle = task.handle_;
+    
     if (handle && !handle.done()) {
         // Inject scheduler pointer into the promise for awaiter delegation
         auto& promise = handle.promise();
@@ -188,6 +194,23 @@ auto Scheduler::finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std:
         return finalizeMainThreadTask(handle);
     } else {
         return finalizeWorkerThreadTask(handle);
+    }
+}
+
+template <ThreadAffinity Affinity>
+auto Scheduler::getNextTaskWithAffinity() -> std::coroutine_handle<> {
+    if constexpr (Affinity == ThreadAffinity::Main) {
+        // Get next task from main thread queue
+        std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
+        if (!mainThreadTasks_.empty()) {
+            auto nextHandle = mainThreadTasks_.back();
+            mainThreadTasks_.pop_back();
+            return nextHandle;
+        }
+        return std::noop_coroutine();
+    } else {
+        // Get next task from worker pool
+        return workerPool_->dequeueFromAnyWorker();
     }
 }
 

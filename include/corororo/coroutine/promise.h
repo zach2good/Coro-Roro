@@ -12,80 +12,42 @@ class Scheduler;
 
 namespace detail {
 
-// Final awaiter that handles coroutine completion with scheduler delegation
-template <typename DerivedPromise>
-struct FinalAwaiter final
-{
-    auto await_ready() const noexcept -> bool
-    {
-        return false;
+// Generic awaiters with affinity baked in as template parameters
+template <ThreadAffinity Affinity>
+struct InitialAwaiter {
+    Scheduler* scheduler_;
+
+    InitialAwaiter(Scheduler* sched) : scheduler_(sched) {}
+
+    bool await_ready() const noexcept {
+        return false; // Always suspend for scheduling
     }
 
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<DerivedPromise> h) noexcept
-    {
-        auto& promise = h.promise();
-
-        // We are guaranteed to always have a scheduler pointer
-        // Use the templated scheduler method for clean tail call optimization
-        return promise.scheduler_->finalizeTaskWithAffinity<DerivedPromise::affinity>(h);
+    auto await_suspend(std::coroutine_handle<> handle) noexcept {
+        // Very simple call to avoid tail call optimization issues
+        scheduler_->scheduleMainThreadTask(handle);
+        return std::noop_coroutine();
     }
 
-    void await_resume() const noexcept
-    {
-    }
+    void await_resume() const noexcept {}
 };
 
-// Custom initial awaiter for Task types - uses compile-time affinity for symmetric transfer
-struct TaskInitialAwaiter
-{
-    Scheduler* scheduler;
+template <ThreadAffinity Affinity>
+struct FinalAwaiter {
+    Scheduler* scheduler_;
 
-    TaskInitialAwaiter(Scheduler* sched) : scheduler(sched) {}
+    FinalAwaiter(Scheduler* sched) : scheduler_(sched) {}
 
-    // Use compile-time affinity optimization - Task<T> always targets Main thread
-    bool await_ready() const noexcept
-    {
-        // For generic awaiters, we always suspend to allow scheduling
-        return false;
+    bool await_ready() const noexcept {
+        return false; // Always suspend for final await
     }
 
-    template <typename Promise>
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
-    {
-        // We are guaranteed to always have a scheduler pointer
-        // Use the templated scheduler method for clean tail call optimization
-        return scheduler->scheduleTaskWithAffinity<ThreadAffinity::Main>(coroutine);
+    auto await_suspend(std::coroutine_handle<> handle) noexcept {
+        // Very simple call to avoid tail call optimization issues
+        return scheduler_->finalizeMainThreadTask(handle);
     }
 
-    void await_resume() const noexcept
-    {
-    }
-};
-
-// Custom final awaiter for Task types - enables symmetric transfer on completion
-struct TaskFinalAwaiter
-{
-    Scheduler* scheduler;
-
-    TaskFinalAwaiter(Scheduler* sched) : scheduler(sched) {}
-
-    bool await_ready() const noexcept
-    {
-        return false; // Always suspend to allow continuation
-    }
-
-    template <typename Promise>
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
-    {
-        // We are guaranteed to always have a scheduler pointer
-        // Use the templated scheduler method for clean tail call optimization
-        return scheduler->finalizeTaskWithAffinity<Promise::affinity>(coroutine);
-    }
-
-    void await_resume() const noexcept
-    {
-        // Nothing to do when we resume
-    }
+    void await_resume() const noexcept {}
 };
 
 } // namespace detail

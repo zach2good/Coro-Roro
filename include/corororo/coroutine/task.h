@@ -2,12 +2,14 @@
 
 #include <corororo/coroutine/promise.h>
 #include <corororo/coroutine/types.h>
-#include <corororo/scheduler/scheduler.h>
 #include <coroutine>
 #include <utility>
 
 namespace CoroRoro
 {
+
+// Forward declaration
+class Scheduler;
 
 // Forward declaration for TaskBase
 template <ThreadAffinity Affinity, typename T>
@@ -35,14 +37,13 @@ struct Promise {
         };
     }
 
-    // Use awaiters from promise.h
+    // Use templated awaiters with affinity baked in
     auto initial_suspend() const noexcept {
-        // Always suspend initially - scheduler will be injected later in schedule()
-        return std::suspend_always{};
+        return detail::InitialAwaiter<Affinity>{scheduler_};
     }
 
     auto final_suspend() noexcept {
-        return FinalAwaiter<Promise<Affinity, T>>{};
+        return detail::FinalAwaiter<Affinity>{scheduler_};
     }
 
     // Only return_value for non-void types
@@ -92,14 +93,13 @@ struct Promise<Affinity, void> {
         };
     }
 
-    // Use awaiters from promise.h
+    // Use templated awaiters with affinity baked in
     auto initial_suspend() const noexcept {
-        // Always suspend initially - scheduler will be injected later in schedule()
-        return std::suspend_always{};
+        return detail::InitialAwaiter<Affinity>{scheduler_};
     }
 
     auto final_suspend() noexcept {
-        return FinalAwaiter<Promise<Affinity, void>>{};
+        return detail::FinalAwaiter<Affinity>{scheduler_};
     }
 
     // Only return_void for void types
@@ -217,6 +217,84 @@ struct TaskBase
 
     // await_resume - void specialization
     template <typename U = T, typename = std::enable_if_t<std::is_void_v<U>>>
+    void await_resume() const noexcept
+    {
+        // void tasks don't return a value
+    }
+
+public:
+    std::coroutine_handle<promise_type> handle_ = nullptr;
+};
+
+// Specialization for void types - no data member needed
+template <ThreadAffinity Affinity>
+struct TaskBase<Affinity, void>
+{
+    using ResultType                         = void;
+    static constexpr ThreadAffinity affinity = Affinity;
+
+    // Generic promise type - affinity is handled through templates
+    using promise_type = detail::Promise<Affinity, void>;
+
+    TaskBase() noexcept = default;
+
+    TaskBase(std::coroutine_handle<promise_type> coroutine) noexcept
+    : handle_(coroutine)
+    {
+    }
+
+    TaskBase(TaskBase const&)            = delete;
+    TaskBase& operator=(TaskBase const&) = delete;
+
+    TaskBase(TaskBase&& other) noexcept
+    : handle_(other.handle_)
+    {
+        other.handle_ = nullptr;
+    }
+
+    TaskBase& operator=(TaskBase&& other) noexcept
+    {
+        if (this != &other)
+        {
+            if (handle_)
+            {
+                handle_.destroy();
+            }
+            handle_       = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    ~TaskBase() noexcept
+    {
+        if (handle_)
+        {
+            handle_.destroy();
+        }
+    }
+
+    // Check if the task is done
+    auto done() const noexcept -> bool
+    {
+        return !handle_ || handle_.done();
+    }
+
+    // No result method for void types - they don't return values
+
+    // Awaitable interface
+    auto await_ready() const noexcept -> bool
+    {
+        return done();
+    }
+
+    auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
+    {
+        // For now, just resume the awaiting coroutine directly
+        return coroutine;
+    }
+
+    // await_resume for void - nothing to return
     void await_resume() const noexcept
     {
         // void tasks don't return a value
