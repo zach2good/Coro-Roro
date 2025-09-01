@@ -175,7 +175,8 @@ struct AsyncTaskPromise : detail::PromiseBase<AsyncTaskPromise<T>, T>
 {
     AsyncTaskPromise()
     {
-        this->threadAffinity_ = ThreadAffinity::Worker; // AsyncTasks run on worker threads
+        // Set thread affinity for AsyncTasks (for compatibility)
+        this->threadAffinity_ = ThreadAffinity::Worker;
     }
 
     auto get_return_object() noexcept -> AsyncTask<T>
@@ -224,7 +225,8 @@ struct AsyncTaskPromise<void> : detail::PromiseBase<AsyncTaskPromise<void>, void
 {
     AsyncTaskPromise()
     {
-        this->threadAffinity_ = ThreadAffinity::Worker; // AsyncTasks run on worker threads
+        // Set thread affinity for AsyncTasks (for compatibility)
+        this->threadAffinity_ = ThreadAffinity::Worker;
     }
 
     auto get_return_object() noexcept -> AsyncTask<void>

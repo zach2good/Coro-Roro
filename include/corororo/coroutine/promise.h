@@ -104,9 +104,9 @@ struct PromiseBase
     // Data storage for non-void types
     std::conditional_t<!std::is_void_v<T>, T, std::monostate> data_;
 
-    Scheduler*              scheduler_      = nullptr;                // Reference to the scheduler
-    std::coroutine_handle<> continuation_   = nullptr;                // Continuation coroutine
-    ThreadAffinity          threadAffinity_ = ThreadAffinity::Worker; // Default to worker thread
+    Scheduler*              scheduler_      = nullptr; // Reference to the scheduler
+    std::coroutine_handle<> continuation_   = nullptr; // Continuation coroutine
+    ThreadAffinity          threadAffinity_ = ThreadAffinity::Worker; // Runtime assignable for compatibility
 
     // CRTP helper - get derived instance
     auto derived() -> Derived&
@@ -168,9 +168,9 @@ struct PromiseBase
 template <typename Derived>
 struct PromiseBase<Derived, void>
 {
-    Scheduler*              scheduler_      = nullptr;                // Reference to the scheduler
-    std::coroutine_handle<> continuation_   = nullptr;                // Continuation coroutine
-    ThreadAffinity          threadAffinity_ = ThreadAffinity::Worker; // Default to worker thread
+    Scheduler*              scheduler_      = nullptr; // Reference to the scheduler
+    std::coroutine_handle<> continuation_   = nullptr; // Continuation coroutine
+    ThreadAffinity          threadAffinity_ = ThreadAffinity::Worker; // Runtime assignable for compatibility
 
     // CRTP helper - get derived instance
     auto derived() -> Derived&
@@ -235,7 +235,7 @@ struct TaskPromise : PromiseBase<TaskPromise<TaskType, T>, T>
     // Get the return object - TaskType is passed as template parameter
     auto get_return_object() noexcept -> TaskType
     {
-        // Set thread affinity based on Task type
+        // Set thread affinity based on Task type (for compatibility)
         this->threadAffinity_ = TaskType::affinity;
         return TaskType{ std::coroutine_handle<TaskPromise<TaskType, T>>::from_promise(*this) };
     }
@@ -273,7 +273,7 @@ struct TaskPromise<TaskType, void> : PromiseBase<TaskPromise<TaskType, void>, vo
     // Get the return object - TaskType is passed as template parameter
     auto get_return_object() noexcept -> TaskType
     {
-        // Set thread affinity based on Task type
+        // Set thread affinity based on Task type (for compatibility)
         this->threadAffinity_ = TaskType::affinity;
         return TaskType{ std::coroutine_handle<TaskPromise<TaskType, void>>::from_promise(*this) };
     }

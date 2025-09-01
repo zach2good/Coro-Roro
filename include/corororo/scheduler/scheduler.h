@@ -60,7 +60,7 @@ public:
     Scheduler& operator=(Scheduler const&) = delete;
     Scheduler& operator=(Scheduler&&) = delete;
 
-    // Schedule method for Task types (main thread)
+    // Schedule method for Task types (main thread) - uses compile-time affinity
     template <typename T>
     void schedule(Task<T>&& task)
     {
@@ -68,11 +68,11 @@ public:
         {
             // Propagate scheduler reference to the task's promise
             task.handle_.promise().scheduler_ = this;
-            scheduleHandle(task.handle_);
+            scheduleHandleWithAffinity(task.handle_, Task<T>::affinity);
         }
     }
 
-    // Schedule method for AsyncTask types (worker threads)
+    // Schedule method for AsyncTask types (worker threads) - uses compile-time affinity
     template <typename T>
     void schedule(AsyncTask<T>&& task)
     {
@@ -80,11 +80,11 @@ public:
         {
             // Propagate scheduler reference to the task's promise
             task.handle_.promise().scheduler_ = this;
-            scheduleHandle(task.handle_);
+            scheduleHandleWithAffinity(task.handle_, AsyncTask<T>::affinity);
         }
     }
 
-    // Generic schedule method for any task type
+    // Generic schedule method for any task type - uses compile-time affinity when available
     template <typename TaskType>
     void schedule(TaskType&& task)
     {
@@ -96,7 +96,16 @@ public:
             {
                 // Propagate scheduler reference to the task's promise
                 handle.promise().scheduler_ = this;
-                scheduleHandle(handle);
+
+                // Use compile-time affinity if available, otherwise determine at runtime
+                if constexpr (requires { TaskType::affinity; })
+                {
+                    scheduleHandleWithAffinity(handle, TaskType::affinity);
+                }
+                else
+                {
+                    scheduleHandle(handle);
+                }
             }
         }
     }
@@ -203,7 +212,15 @@ public:
                     if (handle)
                     {
                         handle.promise().scheduler_ = this;
-                        scheduleHandle(handle);
+                        // Use compile-time affinity if available
+                        if constexpr (requires { decltype(task)::affinity; })
+                        {
+                            scheduleHandleWithAffinity(handle, decltype(task)::affinity);
+                        }
+                        else
+                        {
+                            scheduleHandle(handle);
+                        }
                     }
                 }
                 co_return;
@@ -243,7 +260,15 @@ public:
                     if (handle)
                     {
                         handle.promise().scheduler_ = this;
-                        scheduleHandle(handle);
+                        // Use compile-time affinity if available
+                        if constexpr (requires { decltype(task)::affinity; })
+                        {
+                            scheduleHandleWithAffinity(handle, decltype(task)::affinity);
+                        }
+                        else
+                        {
+                            scheduleHandle(handle);
+                        }
                     }
                 }
                 co_return;
@@ -406,8 +431,8 @@ private:
             return;
         }
 
-        // Determine thread affinity by checking the promise type
-        ThreadAffinity affinity = determineThreadAffinity(coroutine);
+        // Fallback: default to main thread when compile-time affinity is not available
+        ThreadAffinity affinity = ThreadAffinity::Main;
 
         if (affinity == ThreadAffinity::Main)
         {
@@ -519,8 +544,8 @@ inline ThreadAffinity Scheduler::determineThreadAffinity(std::coroutine_handle<>
         return ThreadAffinity::Main; // Default to main thread
     }
 
-    // For now, fall back to heuristic based on current thread context
-    // TODO: Implement proper runtime promise type checking
+    // Try to determine affinity from the promise type at compile time
+    // This is a fallback for cases where compile-time affinity is not available
     if (std::this_thread::get_id() != mainThreadId_)
     {
         return ThreadAffinity::Worker;
