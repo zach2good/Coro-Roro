@@ -16,6 +16,15 @@
 
 namespace CoroRoro {
 
+// Forward declarations for friend classes
+namespace detail {
+    template <typename DerivedPromise>
+    struct FinalAwaiter;
+
+    struct TaskInitialAwaiter;
+    struct TaskFinalAwaiter;
+}
+
 using steady_clock = std::chrono::steady_clock;
 using time_point = std::chrono::time_point<steady_clock>;
 using milliseconds = std::chrono::milliseconds;
@@ -46,23 +55,27 @@ public:
     // Process expired tasks - minimal implementation
     auto runExpiredTasks(time_point referenceTime = steady_clock::now()) -> milliseconds;
 
-    // Check if running
-    auto isRunning() const -> bool { return running_.load(); }
-
     // Get worker thread count
     auto getWorkerThreadCount() const -> size_t { return workerPool_->getThreadCount(); }
 
     // Get main thread ID
     auto getMainThreadId() const -> std::thread::id { return mainThreadId_; }
 
-    // Templated methods for generic awaiters
+    // Friend declarations for awaiters that need access to private methods
+    template <typename DerivedPromise>
+    friend struct detail::FinalAwaiter;
+
+    friend struct detail::TaskInitialAwaiter;
+    friend struct detail::TaskFinalAwaiter;
+
+private:
+    // Templated methods for generic awaiters (private - accessed via friends)
     template <ThreadAffinity Affinity>
     auto scheduleTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
 
     template <ThreadAffinity Affinity>
     auto finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
 
-private:
     // Helper methods
     auto scheduleMainThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
     auto scheduleWorkerThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<>;
@@ -112,23 +125,7 @@ inline auto Scheduler::runExpiredTasks(time_point referenceTime) -> milliseconds
     return std::chrono::duration_cast<milliseconds>(steady_clock::now() - start);
 }
 
-template <ThreadAffinity Affinity>
-auto Scheduler::scheduleTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
-    if constexpr (Affinity == ThreadAffinity::Main) {
-        return scheduleMainThreadTask(handle);
-    } else {
-        return scheduleWorkerThreadTask(handle);
-    }
-}
 
-template <ThreadAffinity Affinity>
-auto Scheduler::finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
-    if constexpr (Affinity == ThreadAffinity::Main) {
-        return finalizeMainThreadTask(handle);
-    } else {
-        return finalizeWorkerThreadTask(handle);
-    }
-}
 
 inline auto Scheduler::scheduleMainThreadTask(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
     std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
@@ -157,6 +154,25 @@ inline auto Scheduler::finalizeMainThreadTask([[maybe_unused]] std::coroutine_ha
 inline auto Scheduler::finalizeWorkerThreadTask([[maybe_unused]] std::coroutine_handle<> handle) -> std::coroutine_handle<> {
     // Delegate to worker pool for next task
     return workerPool_->dequeueFromAnyWorker();
+}
+
+// Template implementations (private - accessed via friends)
+template <ThreadAffinity Affinity>
+auto Scheduler::scheduleTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+    if constexpr (Affinity == ThreadAffinity::Main) {
+        return scheduleMainThreadTask(handle);
+    } else {
+        return scheduleWorkerThreadTask(handle);
+    }
+}
+
+template <ThreadAffinity Affinity>
+auto Scheduler::finalizeTaskWithAffinity(std::coroutine_handle<> handle) -> std::coroutine_handle<> {
+    if constexpr (Affinity == ThreadAffinity::Main) {
+        return finalizeMainThreadTask(handle);
+    } else {
+        return finalizeWorkerThreadTask(handle);
+    }
 }
 
 } // namespace CoroRoro
