@@ -25,10 +25,14 @@ struct FinalAwaiter final
     {
         auto& promise = h.promise();
 
-        // Use scheduler's templated method for generic handling
+        // Use scheduler's direct methods for tail call optimization
         if (promise.scheduler_)
         {
-            return promise.scheduler_->finalizeTaskWithAffinity<DerivedPromise::affinity>(h);
+            if constexpr (DerivedPromise::affinity == ThreadAffinity::Main) {
+                return promise.scheduler_->finalizeMainThreadTaskDirect(h);
+            } else {
+                return promise.scheduler_->finalizeWorkerThreadTaskDirect(h);
+            }
         }
 
         // Fallback to continuation if no scheduler
@@ -62,9 +66,9 @@ struct TaskInitialAwaiter
     template <typename Promise>
     std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
     {
-        // Use scheduler's templated method for generic handling
+        // Use scheduler's direct method for tail call optimization
         if (scheduler) {
-            return scheduler->scheduleTaskWithAffinity<ThreadAffinity::Main>(coroutine);
+            return scheduler->scheduleMainThreadTaskDirect(coroutine);
         }
 
         return std::noop_coroutine();
@@ -90,9 +94,13 @@ struct TaskFinalAwaiter
     template <typename Promise>
     std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
     {
-        // Use scheduler's templated method for generic handling
+        // Use scheduler's direct methods for tail call optimization
         if (scheduler) {
-            return scheduler->finalizeTaskWithAffinity<Promise::affinity>(coroutine);
+            if constexpr (Promise::affinity == ThreadAffinity::Main) {
+                return scheduler->finalizeMainThreadTaskDirect(coroutine);
+            } else {
+                return scheduler->finalizeWorkerThreadTaskDirect(coroutine);
+            }
         }
 
         return std::noop_coroutine();
