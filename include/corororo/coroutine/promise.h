@@ -6,11 +6,17 @@
 #include <thread>
 #include <type_traits>
 
-
 namespace CoroRoro
 {
-// Forward declaration
-class Scheduler;
+// Forward declaration - methods needed by awaiters
+class Scheduler
+{
+public:
+    std::thread::id getMainThreadId() const;
+    void scheduleHandleWithAffinity(std::coroutine_handle<> handle, ThreadAffinity affinity);
+    std::coroutine_handle<> getNextMainThreadTask();
+    std::coroutine_handle<> getNextWorkerTask();
+};
 
 namespace detail
 {
@@ -228,26 +234,96 @@ struct PromiseBase<Derived, void>
     }
 };
 
-// CRTP Promise for Task types
+// Custom initial awaiter for Task types - uses compile-time affinity for symmetric transfer
+struct TaskInitialAwaiter
+{
+    Scheduler* scheduler = nullptr;
+
+    TaskInitialAwaiter(Scheduler* sched) : scheduler(sched) {}
+
+    // Use compile-time affinity optimization - Task<T> always targets Main thread
+    bool await_ready() const noexcept
+    {
+        // Compile-time optimization: Task<T> has ThreadAffinity::Main
+        // Check if we're already on the main thread without expensive lookups
+        if constexpr (true) {  // We know this is for Main affinity at compile time
+            if (ThreadContext::current && ThreadContext::current->affinity == ThreadAffinity::Main) {
+                return true;  // Already on main thread - proceed immediately!
+            }
+        }
+        return false;  // Need to transfer to main thread
+    }
+
+    template <typename Promise>
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
+    {
+        // 🎯 Use TransferPolicy dispatcher for compile-time optimized transfer to Main thread
+        if (scheduler) {
+            return dispatchTransfer<ThreadAffinity::Main>(scheduler, coroutine);
+        }
+
+        return std::noop_coroutine();
+    }
+
+    void await_resume() const noexcept
+    {
+        // Nothing to do when we resume
+    }
+};
+
+// Custom final awaiter for Task types - enables symmetric transfer on completion
+struct TaskFinalAwaiter
+{
+    Scheduler* scheduler = nullptr;
+
+    TaskFinalAwaiter(Scheduler* sched) : scheduler(sched) {}
+
+    bool await_ready() const noexcept
+    {
+        return false; // Always suspend to allow continuation
+    }
+
+    template <typename Promise>
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> coroutine) noexcept
+    {
+        // Check if there's a continuation to resume
+        auto& promise = coroutine.promise();
+        if (promise.continuation_) {
+            // We have a continuation - check if we can do symmetric transfer
+            if (scheduler) {
+                // Try to transfer to next task on the same thread affinity
+                return scheduler->getNextMainThreadTask();
+            }
+            return promise.continuation_;
+        }
+
+        return std::noop_coroutine();
+    }
+
+    void await_resume() const noexcept
+    {
+        // Nothing to do when we resume
+    }
+};
+
+// Promise for Task types (main thread affinity)
 template <typename TaskType, typename T = void>
 struct TaskPromise : PromiseBase<TaskPromise<TaskType, T>, T>
 {
-    // Get the return object - TaskType is passed as template parameter
+    // Get the return object
     auto get_return_object() noexcept -> TaskType
     {
-        // Set thread affinity based on Task type (for compatibility)
-        this->threadAffinity_ = TaskType::affinity;
         return TaskType{ std::coroutine_handle<TaskPromise<TaskType, T>>::from_promise(*this) };
     }
 
-    auto initial_suspend() const noexcept -> std::suspend_never
+    auto initial_suspend() const noexcept -> TaskInitialAwaiter
     {
-        return {};
+        return TaskInitialAwaiter{this->scheduler_};
     }
 
-    auto final_suspend() noexcept -> FinalAwaiter<TaskPromise<TaskType, T>>
+    auto final_suspend() noexcept -> TaskFinalAwaiter
     {
-        return {};
+        return TaskFinalAwaiter{this->scheduler_};
     }
 
     void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
@@ -266,26 +342,24 @@ struct TaskPromise : PromiseBase<TaskPromise<TaskType, T>, T>
     }
 };
 
-// Void specialization for CRTP TaskPromise
+// Void specialization for TaskPromise
 template <typename TaskType>
 struct TaskPromise<TaskType, void> : PromiseBase<TaskPromise<TaskType, void>, void>
 {
-    // Get the return object - TaskType is passed as template parameter
+    // Get the return object
     auto get_return_object() noexcept -> TaskType
     {
-        // Set thread affinity based on Task type (for compatibility)
-        this->threadAffinity_ = TaskType::affinity;
         return TaskType{ std::coroutine_handle<TaskPromise<TaskType, void>>::from_promise(*this) };
     }
 
-    auto initial_suspend() const noexcept -> std::suspend_never
+    auto initial_suspend() const noexcept -> TaskInitialAwaiter
     {
-        return {};
+        return TaskInitialAwaiter{this->scheduler_};
     }
 
-    auto final_suspend() noexcept -> FinalAwaiter<TaskPromise<TaskType, void>>
+    auto final_suspend() noexcept -> TaskFinalAwaiter
     {
-        return {};
+        return TaskFinalAwaiter{this->scheduler_};
     }
 
     void return_void() noexcept

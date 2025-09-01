@@ -1,6 +1,7 @@
 #pragma once
 
 #include <corororo/coroutine/types.h>
+#include <corororo/scheduler/scheduler.h>
 #include <atomic>
 #include <coroutine>
 #include <cstdint>
@@ -59,6 +60,9 @@ public:
     // Enqueue work to this worker's queue
     void enqueueWork(std::coroutine_handle<> handle);
 
+    // Try to dequeue work from this worker's queue
+    auto tryDequeueWork(std::coroutine_handle<>& handle) -> bool;
+
 private:
     // Main worker loop
     void workerLoop();
@@ -101,6 +105,9 @@ public:
 
     // Enqueue work to any available worker (round-robin distribution)
     void enqueueToAnyWorker(std::coroutine_handle<> handle);
+
+    // Try to dequeue work from any worker (for symmetric transfer)
+    auto dequeueFromAnyWorker() -> std::coroutine_handle<>;
 
     // Get the number of worker threads
     auto getThreadCount() const -> size_t
@@ -185,8 +192,17 @@ inline void WorkerThread::enqueueWork(std::coroutine_handle<> handle)
     workQueue_.enqueue(handle);
 }
 
+inline auto WorkerThread::tryDequeueWork(std::coroutine_handle<>& handle) -> bool
+{
+    return workQueue_.tryDequeue(handle);
+}
+
 inline void WorkerThread::workerLoop()
 {
+    // Initialize thread context for this worker thread
+    ThreadContext workerThreadContext{ThreadAffinity::Worker, scheduler_};
+    ThreadContext::current = &workerThreadContext;
+
     while (running_.load())
     {
         std::coroutine_handle<> handle;
@@ -205,6 +221,9 @@ inline void WorkerThread::workerLoop()
             std::this_thread::yield();
         }
     }
+
+    // Clear thread context when done
+    ThreadContext::current = nullptr;
 }
 
 //
@@ -254,6 +273,26 @@ inline void WorkerPool::enqueueToAnyWorker(std::coroutine_handle<> handle)
     // Round-robin distribution
     size_t worker = currentWorker_.fetch_add(1) % workers_.size();
     enqueueToWorker(worker, handle);
+}
+
+inline auto WorkerPool::dequeueFromAnyWorker() -> std::coroutine_handle<>
+{
+    // Try to dequeue from any worker, starting from a random worker to distribute load
+    static thread_local size_t lastWorker = 0;
+    size_t startWorker = lastWorker % workers_.size();
+
+    for (size_t i = 0; i < workers_.size(); ++i)
+    {
+        size_t workerIdx = (startWorker + i) % workers_.size();
+        std::coroutine_handle<> handle;
+        if (workers_[workerIdx]->tryDequeueWork(handle))
+        {
+            lastWorker = (workerIdx + 1) % workers_.size();
+            return handle;
+        }
+    }
+
+    return std::noop_coroutine();
 }
 
 } // namespace CoroRoro

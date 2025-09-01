@@ -19,6 +19,111 @@
 namespace CoroRoro
 {
 
+//
+// ThreadContext - Type-based thread affinity tracking
+//
+//   Eliminates expensive thread ID lookups by tracking thread affinity
+//   in thread-local storage. Uses compile-time type information for routing.
+//
+struct ThreadContext
+{
+    ThreadAffinity affinity;
+    Scheduler* scheduler;
+
+    // Thread-local instance for each thread
+    static thread_local ThreadContext* current;
+
+    // Check if current thread has correct affinity for a task type
+    template <typename TaskType>
+    static bool isCorrectThreadForTask() noexcept
+    {
+        if (!current) return false;
+        return current->affinity == TaskType::affinity;
+    }
+
+    // Check if we need to transfer for a specific affinity
+    static bool needsTransfer(ThreadAffinity required) noexcept
+    {
+        if (!current) return true;  // Unknown thread - assume transfer needed
+        return current->affinity != required;
+    }
+};
+
+// Initialize thread-local storage
+inline thread_local ThreadContext* ThreadContext::current = nullptr;
+
+//
+// TransferPolicy - Compile-time transfer logic
+//
+//   Template specialization for different affinity combinations.
+//   Eliminates runtime conditionals and provides type safety.
+//
+template <ThreadAffinity From, ThreadAffinity To>
+struct TransferPolicy
+{
+    static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept
+    {
+        if constexpr (From == To) {
+            // Same affinity - no transfer needed, resume immediately
+            return handle;
+        } else {
+            // Different affinity - schedule to target thread, symmetric transfer to next task for current thread
+            scheduler->scheduleHandleWithAffinity<To>(handle);
+            return scheduler->getNextTask(From); // Get next task for current thread (From)
+        }
+    }
+};
+
+// Specialization for Main → Worker transfer
+template <>
+struct TransferPolicy<ThreadAffinity::Main, ThreadAffinity::Worker>
+{
+    static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept
+    {
+        scheduler->scheduleHandleWithAffinity<ThreadAffinity::Worker>(handle);
+        // Symmetric transfer: get next task from main thread queue
+        return scheduler->getNextMainThreadTask();
+    }
+};
+
+// Specialization for Worker → Main transfer
+template <>
+struct TransferPolicy<ThreadAffinity::Worker, ThreadAffinity::Main>
+{
+    static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept
+    {
+        scheduler->scheduleHandleWithAffinity<ThreadAffinity::Main>(handle);
+        // Symmetric transfer: get next task from worker thread queue
+        return scheduler->getNextWorkerTask();
+    }
+};
+
+// Helper function to get current thread affinity
+inline ThreadAffinity getCurrentThreadAffinity() noexcept
+{
+    if (ThreadContext::current) {
+        return ThreadContext::current->affinity;
+    }
+    return ThreadAffinity::Main; // Default assumption
+}
+
+// 🎯 TransferPolicy Dispatcher - Runtime dispatch to compile-time templates
+template <ThreadAffinity TargetAffinity>
+inline auto dispatchTransfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept
+{
+    auto currentAffinity = getCurrentThreadAffinity();
+    if (currentAffinity == TargetAffinity) {
+        // Same affinity - use same-affinity specialization
+        return TransferPolicy<TargetAffinity, TargetAffinity>::transfer(scheduler, handle);
+    } else if (currentAffinity == ThreadAffinity::Main) {
+        // Transfer from Main to Target
+        return TransferPolicy<ThreadAffinity::Main, TargetAffinity>::transfer(scheduler, handle);
+    } else {
+        // Transfer from Worker to Target
+        return TransferPolicy<ThreadAffinity::Worker, TargetAffinity>::transfer(scheduler, handle);
+    }
+}
+
 // Forward declarations
 class WorkerPool;
 
@@ -68,7 +173,7 @@ public:
         {
             // Propagate scheduler reference to the task's promise
             task.handle_.promise().scheduler_ = this;
-            scheduleHandleWithAffinity(task.handle_, Task<T>::affinity);
+            scheduleHandleWithAffinity<Task<T>::affinity>(task.handle_);
         }
     }
 
@@ -80,7 +185,7 @@ public:
         {
             // Propagate scheduler reference to the task's promise
             task.handle_.promise().scheduler_ = this;
-            scheduleHandleWithAffinity(task.handle_, AsyncTask<T>::affinity);
+            scheduleHandleWithAffinity<AsyncTask<T>::affinity>(task.handle_);
         }
     }
 
@@ -100,7 +205,7 @@ public:
                 // Use compile-time affinity if available, otherwise determine at runtime
                 if constexpr (requires { TaskType::affinity; })
                 {
-                    scheduleHandleWithAffinity(handle, TaskType::affinity);
+                    scheduleHandleWithAffinity<TaskType::affinity>(handle);
                 }
                 else
                 {
@@ -160,7 +265,7 @@ public:
                     // Execute the task
                     auto nextTime = task->execute();
 
-                    if (task->getType() == ScheduledTask::Type::Interval && nextTime != time_point::max())
+                    if (task->getType() == ScheduledTask::Type::Interval && nextTime != std::chrono::time_point<std::chrono::steady_clock>::max())
                     {
                         // For interval tasks, reschedule with new execution time
                         auto rescheduledTask = std::make_shared<ScheduledTask>(
@@ -336,7 +441,25 @@ public:
         return activeIntervals_.find(intervalTask) != activeIntervals_.end();
     }
 
-private:
+    // Get next main thread task for symmetric transfer
+    auto getNextMainThreadTask() -> std::coroutine_handle<>
+    {
+        std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
+        if (!mainThreadTasks_.empty()) {
+            auto handle = mainThreadTasks_.front();
+            mainThreadTasks_.pop_front();
+            return handle;
+        }
+        return std::noop_coroutine();
+    }
+
+    // Get next worker task for symmetric transfer
+    auto getNextWorkerTask() -> std::coroutine_handle<>
+    {
+        // Try to get a task from any worker thread
+        return workerPool_->dequeueFromAnyWorker();
+    }
+
     // Helper method to schedule tasks with known affinity
     template <typename TaskType>
     void scheduleTask(TaskType&& task, ThreadAffinity affinity)
@@ -354,17 +477,19 @@ private:
     }
 
     // Schedule handle with explicit affinity (compile-time optimization)
-    void scheduleHandleWithAffinity(std::coroutine_handle<> handle, ThreadAffinity affinity)
+    // Template-based scheduling for compile-time optimization
+    template <ThreadAffinity Affinity>
+    void scheduleHandleWithAffinity(std::coroutine_handle<> handle)
     {
-        if (affinity == ThreadAffinity::Main)
+        if constexpr (Affinity == ThreadAffinity::Main)
         {
-            // Schedule on main thread
+            // Schedule on main thread - compile-time known!
             std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
             mainThreadTasks_.push_back(handle);
         }
         else
         {
-            // Schedule on worker thread
+            // Schedule on worker thread - compile-time known!
             workerPool_->enqueueToAnyWorker(handle);
         }
     }
@@ -382,6 +507,14 @@ private:
     {
         return workerPool_->getThreadCount();
     }
+
+    // Get the main thread ID (for symmetric transfer in awaiters)
+    auto getMainThreadId() const -> std::thread::id
+    {
+        return mainThreadId_;
+    }
+
+
 
     // Check if the scheduler is running
     auto isRunning() const -> bool
@@ -421,6 +554,24 @@ private:
     // Timer thread function
     void timerThreadFunction();
 
+    // Template-based routing using compile-time affinity
+    template <typename TaskType>
+    void schedule(TaskType&& task)
+    {
+        static_assert(TaskType::affinity == ThreadAffinity::Main ||
+                     TaskType::affinity == ThreadAffinity::Worker,
+                     "Invalid task affinity");
+
+        if constexpr (TaskType::affinity == ThreadAffinity::Main) {
+            // Main thread task - use main thread queue
+            std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
+            mainThreadTasks_.push_back(task.handle_);
+        } else {
+            // Worker thread task - use worker pool
+            workerPool_->enqueueToAnyWorker(task.handle_);
+        }
+    }
+
     // Schedule a coroutine handle to be resumed at a later time as soon as a thread
     // is available. This is the core handle-based scheduling method.
     void scheduleHandle(std::coroutine_handle<> coroutine)
@@ -454,6 +605,10 @@ private:
 inline Scheduler::Scheduler(size_t numThreads)
     : mainThreadId_(std::this_thread::get_id())
 {
+    // Initialize thread context for main thread
+    static ThreadContext mainThreadContext{ThreadAffinity::Main, this};
+    ThreadContext::current = &mainThreadContext;
+
     // Create worker pool
     workerPool_ = std::make_unique<WorkerPool>(this, numThreads);
 
@@ -507,7 +662,7 @@ inline void Scheduler::timerThreadFunction()
                     // Execute the task
                     auto nextTime = task->execute();
 
-                    if (task->getType() == ScheduledTask::Type::Interval && nextTime != time_point::max())
+                    if (task->getType() == ScheduledTask::Type::Interval && nextTime != std::chrono::time_point<std::chrono::steady_clock>::max())
                     {
                         // For interval tasks, reschedule with new execution time
                         auto rescheduledTask = std::make_shared<ScheduledTask>(
