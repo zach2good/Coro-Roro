@@ -96,8 +96,12 @@ namespace detail
     };
 
     // Base promise structure
+    template <typename T = void>
     struct PromiseBase
     {
+        // Data storage for non-void types
+        std::conditional_t<!std::is_void_v<T>, T, std::monostate> data_;
+
         Scheduler* scheduler_ = nullptr; // Reference to the scheduler
         std::coroutine_handle<> continuation_ = nullptr; // Continuation coroutine
         ThreadAffinity threadAffinity_ = ThreadAffinity::Worker; // Default to worker thread
@@ -106,18 +110,21 @@ namespace detail
         template <typename AwaitableType>
         auto await_transform(AwaitableType&& awaitable) noexcept
         {
-            // Check if this is a Task or AsyncTask (has getHandle method)
-            if constexpr (requires { awaitable.getHandle(); })
+            return await_transform_impl(std::forward<AwaitableType>(awaitable));
+        }
+
+        template <typename AwaitableType>
+        auto await_transform_impl(AwaitableType&& awaitable) noexcept
+        {
+            // Check if this is a Task or AsyncTask (has handle_ member)
+            if constexpr (requires { awaitable.handle_; })
             {
                 // Share the same scheduler reference
-                awaitable.getHandle().promise().scheduler_ = this->scheduler_;
+                auto handle = awaitable.handle_;
+                auto& promise = handle.promise();
+                promise.scheduler_ = this->scheduler_;
 
-                // Re-enable transfer control now that we have proper thread affinity routing
-                constexpr bool shouldTransfer = true;
-
-                return ConditionalTransferAwaiter<shouldTransfer, decltype(awaitable.getHandle())>{
-                    awaitable.getHandle()
-                };
+                return std::forward<AwaitableType>(awaitable);
             }
             else
             {
@@ -132,8 +139,8 @@ namespace detail
     };
 
     // Promise for tasks that return a value
-    template <typename Task, typename T>
-    struct Promise : PromiseBase<T>
+    template <typename Task, typename T = void>
+    struct Promise : detail::PromiseBase<T>
     {
         auto get_return_object() noexcept -> Task
         {
@@ -175,7 +182,7 @@ namespace detail
 
     // Promise for tasks that return void
     template <typename Task>
-    struct Promise<Task, void> : PromiseBase<void>
+    struct Promise<Task, void> : detail::PromiseBase<void>
     {
         auto get_return_object() noexcept -> Task
         {

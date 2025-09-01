@@ -69,3 +69,54 @@ inline SomeClass::someFunction()
 }
 
 ```
+
+- Header comment formatting
+```cpp
+
+//
+// ClassName
+//
+//   Details about the class, other information.
+//
+
+class ClassName final
+{
+    ...
+};
+```
+
+- Marker/group header formatting
+```cpp
+class ClassName final
+{
+pulic:
+    //
+    // Public-facing API
+    //
+
+    void func() ...
+
+    void func() ...
+
+    void func() ...
+
+    //
+    // Utility functions
+    //
+
+    void func() ...
+    
+    void func() ...
+
+    void func() ...
+
+private:
+    Member& member_;
+};
+
+//
+// inline members
+//
+
+...
+```

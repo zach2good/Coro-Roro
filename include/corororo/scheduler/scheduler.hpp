@@ -68,12 +68,15 @@ public:
     void schedule(TaskType&& task)
     {
         // Extract the coroutine handle and schedule it
-        auto handle = task.getHandle();
-        if (handle)
+        if constexpr (requires { task.handle_; })
         {
-            // Propagate scheduler reference to the task's promise
-            handle.promise().scheduler_ = this;
-            scheduleHandle(handle);
+            auto handle = task.handle_;
+            if (handle)
+            {
+                // Propagate scheduler reference to the task's promise
+                handle.promise().scheduler_ = this;
+                scheduleHandle(handle);
+            }
         }
     }
 
@@ -95,9 +98,9 @@ public:
                 auto task = (*storedCallable)();
 
                 // Schedule the resulting task
-                if constexpr (requires { task.getHandle(); })
+                if constexpr (requires { task.handle_; })
                 {
-                    auto handle = task.getHandle();
+                    auto handle = task.handle_;
                     if (handle)
                     {
                         handle.promise().scheduler_ = this;
@@ -135,9 +138,9 @@ public:
                 auto task = (*storedCallable)();
 
                 // Schedule the resulting task
-                if constexpr (requires { task.getHandle(); })
+                if constexpr (requires { task.handle_; })
                 {
-                    auto handle = task.getHandle();
+                    auto handle = task.handle_;
                     if (handle)
                     {
                         handle.promise().scheduler_ = this;

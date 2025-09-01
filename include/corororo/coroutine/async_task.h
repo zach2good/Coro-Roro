@@ -1,7 +1,8 @@
 #pragma once
 
 #include <corororo/coroutine/promise.h>
-#include <corororo/coroutine/task.h>
+// Forward declare AsyncTask to avoid circular dependency
+#include <corororo/coroutine/types.h>
 
 #include <coroutine>
 #include <exception>
@@ -14,7 +15,7 @@ namespace CoroRoro
 // AsyncTaskPromise for non-void types
 //
 template <typename T>
-struct AsyncTaskPromise : PromiseBase<T>
+struct AsyncTaskPromise : detail::PromiseBase<T>
 {
     AsyncTaskPromise()
     {
@@ -23,22 +24,28 @@ struct AsyncTaskPromise : PromiseBase<T>
 
     auto get_return_object() noexcept -> AsyncTask<T>
     {
-        return {std::coroutine_handle<AsyncTaskPromise<T>>::from_promise(*this)};
+        return AsyncTask<T>{std::coroutine_handle<AsyncTaskPromise<T>>::from_promise(*this)};
     }
 
     void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
     {
-        this->data_ = std::move(value);
+        if constexpr (!std::is_void_v<T>) {
+            this->data_ = std::move(value);
+        }
     }
 
     void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>)
     {
-        this->data_ = value;
+        if constexpr (!std::is_void_v<T>) {
+            this->data_ = value;
+        }
     }
 
-    auto result() -> T&
+    auto result() -> std::conditional_t<!std::is_void_v<T>, T&, void>
     {
-        return this->data_;
+        if constexpr (!std::is_void_v<T>) {
+            return this->data_;
+        }
     }
 
     auto initial_suspend() const noexcept -> std::suspend_always
@@ -61,7 +68,7 @@ struct AsyncTaskPromise : PromiseBase<T>
 // AsyncTaskPromise<void> specialization
 //
 template <>
-struct AsyncTaskPromise<void> : PromiseBase<void>
+struct AsyncTaskPromise<void> : detail::PromiseBase<void>
 {
     AsyncTaskPromise()
     {
@@ -70,7 +77,7 @@ struct AsyncTaskPromise<void> : PromiseBase<void>
 
     auto get_return_object() noexcept -> AsyncTask<void>
     {
-        return {std::coroutine_handle<AsyncTaskPromise<void>>::from_promise(*this)};
+        return AsyncTask<void>{std::coroutine_handle<AsyncTaskPromise<void>>::from_promise(*this)};
     }
 
     void return_void() noexcept

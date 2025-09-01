@@ -13,10 +13,10 @@ enum class ThreadAffinity : uint32_t
 };
 
 // Forward declarations
-template <typename T = void>
-class Task;
+template <typename T>
+struct Task;
 
-template <typename T = void>
-class AsyncTask;
+template <typename T>
+struct AsyncTask;
 
 } // namespace CoroRoro

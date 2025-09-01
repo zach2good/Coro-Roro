@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 #include <mutex>
 #include <queue>
@@ -59,22 +60,28 @@ public:
     Scheduler& operator=(Scheduler const&) = delete;
     Scheduler& operator=(Scheduler&&) = delete;
 
-    // Schedule a coroutine handle to be resumed at a later time as soon as a thread
-    // is available. This is the core handle-based scheduling method.
-    void scheduleHandle(std::coroutine_handle<> coroutine);
-
     // Schedule method for Task types (main thread)
     template <typename T>
     void schedule(Task<T>&& task)
     {
-        scheduleTask(std::move(task), ThreadAffinity::Main);
+        if (task.handle_)
+        {
+            // Propagate scheduler reference to the task's promise
+            task.handle_.promise().scheduler_ = this;
+            scheduleHandle(task.handle_);
+        }
     }
 
     // Schedule method for AsyncTask types (worker threads)
     template <typename T>
     void schedule(AsyncTask<T>&& task)
     {
-        scheduleTask(std::move(task), ThreadAffinity::Worker);
+        if (task.handle_)
+        {
+            // Propagate scheduler reference to the task's promise
+            task.handle_.promise().scheduler_ = this;
+            scheduleHandle(task.handle_);
+        }
     }
 
     // Generic schedule method for any task type
@@ -82,12 +89,15 @@ public:
     void schedule(TaskType&& task)
     {
         // Extract the coroutine handle and schedule it
-        auto handle = task.getHandle();
-        if (handle)
+        if constexpr (requires { task.handle_; })
         {
-            // Propagate scheduler reference to the task's promise
-            handle.promise().scheduler_ = this;
-            scheduleHandle(handle);
+            auto handle = task.handle_;
+            if (handle)
+            {
+                // Propagate scheduler reference to the task's promise
+                handle.promise().scheduler_ = this;
+                scheduleHandle(handle);
+            }
         }
     }
 
@@ -121,6 +131,23 @@ public:
 
                 if (task->shouldExecute(referenceTime))
                 {
+                    // For interval tasks, check if one is already active
+                    // Temporarily disable to debug SEH exception
+                    /*
+                    if (task->getType() == ScheduledTask::Type::Interval && isIntervalTaskActive(task))
+                    {
+                        // Interval task is already active, skip execution and reschedule
+                        remainingTasks.push(task);
+                        continue;
+                    }
+
+                    // Mark interval task as active before execution
+                    if (task->getType() == ScheduledTask::Type::Interval)
+                    {
+                        markIntervalTaskActive(task);
+                    }
+                    */
+
                     // Execute the task
                     auto nextTime = task->execute();
 
@@ -152,36 +179,6 @@ public:
         return std::chrono::duration_cast<milliseconds>(steady_clock::now() - start);
     }
 
-private:
-    // Helper method to schedule tasks with known affinity
-    template <typename TaskType>
-    void scheduleTask(TaskType&& task, ThreadAffinity affinity)
-    {
-        auto handle = task.getHandle();
-        if (handle)
-        {
-            // Propagate scheduler reference to the task's promise
-            handle.promise().scheduler_ = this;
-            scheduleHandleWithAffinity(handle, affinity);
-        }
-    }
-
-    // Schedule handle with explicit affinity (compile-time optimization)
-    void scheduleHandleWithAffinity(std::coroutine_handle<> handle, ThreadAffinity affinity)
-    {
-        if (affinity == ThreadAffinity::Main)
-        {
-            // Schedule on main thread
-            std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
-            mainThreadTasks_.push_back(handle);
-        }
-        else
-        {
-            // Schedule on worker thread
-            workerPool_->enqueueToAnyWorker(handle);
-        }
-    }
-
     // Schedule a task to execute after a delay
     template <typename Callable>
     auto scheduleDelayed(milliseconds delay, Callable&& callable) -> CancellationToken
@@ -200,9 +197,9 @@ private:
                 auto task = (*storedCallable)();
 
                 // Schedule the resulting task
-                if constexpr (requires { task.getHandle(); })
+                if constexpr (requires { task.handle_; })
                 {
-                    auto handle = task.getHandle();
+                    auto handle = task.handle_;
                     if (handle)
                     {
                         handle.promise().scheduler_ = this;
@@ -240,9 +237,9 @@ private:
                 auto task = (*storedCallable)();
 
                 // Schedule the resulting task
-                if constexpr (requires { task.getHandle(); })
+                if constexpr (requires { task.handle_; })
                 {
-                    auto handle = task.getHandle();
+                    auto handle = task.handle_;
                     if (handle)
                     {
                         handle.promise().scheduler_ = this;
@@ -264,11 +261,96 @@ private:
         return token;
     }
 
+    // Reschedule an interval task after its child task completes
+    void rescheduleIntervalTask(std::shared_ptr<ScheduledTask> intervalTask)
+    {
+        if (intervalTask->getType() == ScheduledTask::Type::Interval && !intervalTask->isCancelled())
+        {
+            auto completionTime = steady_clock::now();
+            auto nextExecutionTime = completionTime + intervalTask->getInterval();
+
+            // Create a new scheduled task for the next interval
+            auto rescheduledTask = std::make_shared<ScheduledTask>(
+                ScheduledTask::Type::Interval,
+                nextExecutionTime,
+                intervalTask->getTaskFactory(),
+                intervalTask->getToken()
+            );
+            rescheduledTask->setInterval(intervalTask->getInterval());
+
+            {
+                std::lock_guard<std::mutex> lock(scheduledTasksMutex_);
+                scheduledTasks_.push(rescheduledTask);
+            }
+        }
+    }
+
+    // Track active interval tasks to prevent overlapping executions
+    void markIntervalTaskActive(std::shared_ptr<ScheduledTask> intervalTask)
+    {
+        std::lock_guard<std::mutex> lock(activeIntervalsMutex_);
+        activeIntervals_.insert(intervalTask);
+    }
+
+    // Mark interval task as completed and reschedule if needed
+    void markIntervalTaskCompleted(std::shared_ptr<ScheduledTask> intervalTask)
+    {
+        {
+            std::lock_guard<std::mutex> lock(activeIntervalsMutex_);
+            activeIntervals_.erase(intervalTask);
+        }
+
+        // Reschedule the interval task for next execution
+        rescheduleIntervalTask(intervalTask);
+    }
+
+    // Check if an interval task is currently active
+    bool isIntervalTaskActive(std::shared_ptr<ScheduledTask> intervalTask)
+    {
+        std::lock_guard<std::mutex> lock(activeIntervalsMutex_);
+        return activeIntervals_.find(intervalTask) != activeIntervals_.end();
+    }
+
+private:
+    // Helper method to schedule tasks with known affinity
+    template <typename TaskType>
+    void scheduleTask(TaskType&& task, ThreadAffinity affinity)
+    {
+        if constexpr (requires { task.handle_; })
+        {
+            auto handle = task.handle_;
+            if (handle)
+            {
+                // Propagate scheduler reference to the task's promise
+                handle.promise().scheduler_ = this;
+                scheduleHandleWithAffinity(handle, affinity);
+            }
+        }
+    }
+
+    // Schedule handle with explicit affinity (compile-time optimization)
+    void scheduleHandleWithAffinity(std::coroutine_handle<> handle, ThreadAffinity affinity)
+    {
+        if (affinity == ThreadAffinity::Main)
+        {
+            // Schedule on main thread
+            std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
+            mainThreadTasks_.push_back(handle);
+        }
+        else
+        {
+            // Schedule on worker thread
+            workerPool_->enqueueToAnyWorker(handle);
+        }
+    }
 
 
-    // Run expired tasks on the main thread (legacy support)
-    // Returns the time spent processing tasks
-    auto runExpiredTasks(time_point referenceTime = steady_clock::now()) -> milliseconds;
+
+
+
+
+
+
 
     // Get the number of worker threads
     auto getWorkerThreadCount() const -> size_t
@@ -294,6 +376,10 @@ private:
     std::queue<std::shared_ptr<ScheduledTask>> scheduledTasks_;
     std::mutex scheduledTasksMutex_;
 
+    // Active interval tasks (to prevent overlapping executions)
+    std::unordered_set<std::shared_ptr<ScheduledTask>> activeIntervals_;
+    std::mutex activeIntervalsMutex_;
+
     // Timer thread for processing scheduled tasks
     std::thread timerThread_;
     std::atomic<bool> timerRunning_{true};
@@ -309,6 +395,32 @@ private:
 
     // Timer thread function
     void timerThreadFunction();
+
+    // Schedule a coroutine handle to be resumed at a later time as soon as a thread
+    // is available. This is the core handle-based scheduling method.
+    void scheduleHandle(std::coroutine_handle<> coroutine)
+    {
+
+        if (!coroutine || coroutine.done())
+        {
+            return;
+        }
+
+        // Determine thread affinity by checking the promise type
+        ThreadAffinity affinity = determineThreadAffinity(coroutine);
+
+        if (affinity == ThreadAffinity::Main)
+        {
+            // Schedule on main thread
+            std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
+            mainThreadTasks_.push_back(coroutine);
+        }
+        else
+        {
+            // Schedule on worker thread
+            workerPool_->enqueueToAnyWorker(coroutine);
+        }
+    }
 };
 
 //
@@ -345,28 +457,7 @@ inline Scheduler::~Scheduler() noexcept
     }
 }
 
-inline void Scheduler::scheduleHandle(std::coroutine_handle<> coroutine)
-{
-    if (!coroutine || coroutine.done())
-    {
-        return;
-    }
 
-    // Determine thread affinity by checking the promise type
-    ThreadAffinity affinity = determineThreadAffinity(coroutine);
-
-    if (affinity == ThreadAffinity::Main)
-    {
-        // Schedule on main thread
-        std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
-        mainThreadTasks_.push_back(coroutine);
-    }
-    else
-    {
-        // Schedule on worker thread
-        workerPool_->enqueueToAnyWorker(coroutine);
-    }
-}
 
 
 
@@ -428,8 +519,8 @@ inline ThreadAffinity Scheduler::determineThreadAffinity(std::coroutine_handle<>
         return ThreadAffinity::Main; // Default to main thread
     }
 
-    // Use heuristic based on current thread context
-    // This is used for generic coroutine handles where we don't know the type at compile time
+    // For now, fall back to heuristic based on current thread context
+    // TODO: Implement proper runtime promise type checking
     if (std::this_thread::get_id() != mainThreadId_)
     {
         return ThreadAffinity::Worker;

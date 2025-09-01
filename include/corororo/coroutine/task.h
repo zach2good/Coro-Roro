@@ -5,6 +5,11 @@
 #include <coroutine>
 #include <utility>
 
+// Forward declarations to avoid circular dependency
+namespace CoroRoro {
+    template <typename T> struct AsyncTaskPromise;
+}
+
 namespace CoroRoro
 {
 
@@ -101,11 +106,7 @@ struct TaskBase
         }
     }
 
-    // Get the underlying coroutine handle for scheduler access
-    auto getHandle() const noexcept -> std::coroutine_handle<promise_type>
-    {
-        return handle_;
-    }
+
 
     // Check if the task is done
     auto done() const noexcept -> bool
@@ -200,3 +201,6 @@ struct AsyncTask<void> : TaskBase<void, AsyncTaskPromise<void>, ThreadAffinity::
 };
 
 } // namespace CoroRoro
+
+// Include the actual definitions after forward declarations
+#include <corororo/coroutine/async_task.h>
