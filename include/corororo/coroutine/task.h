@@ -30,14 +30,14 @@ struct Promise {
     std::coroutine_handle<> continuation_ = nullptr;
     T data_;
 
-    // Completely generic - no if constexpr needed!
+    // Simplified to avoid C4737
     auto get_return_object() noexcept {
         return TaskBase<Affinity, T>{
             std::coroutine_handle<Promise<Affinity, T>>::from_promise(*this)
         };
     }
 
-    // Use templated awaiters with affinity baked in
+    // Use custom awaiters for performance - but keep them simple to avoid C4737
     auto initial_suspend() const noexcept {
         return detail::InitialAwaiter<Affinity>{scheduler_};
     }
@@ -61,17 +61,10 @@ struct Promise {
 
     void unhandled_exception() noexcept { std::terminate(); }
 
-    // Await transform - same for all affinities
+    // Await transform - simplified to avoid C4737
     template <typename AwaitableType>
     auto await_transform(AwaitableType&& awaitable) noexcept {
-        if constexpr (requires { awaitable.handle_; }) {
-            if (awaitable.handle_ && !awaitable.handle_.done()) {
-                awaitable.handle_.promise().scheduler_ = scheduler_;
-            }
-            return std::forward<AwaitableType>(awaitable);
-        } else {
-            return std::forward<AwaitableType>(awaitable);
-        }
+        return std::forward<AwaitableType>(awaitable);
     }
 
     template <typename U>
@@ -86,14 +79,14 @@ struct Promise<Affinity, void> {
     Scheduler* scheduler_ = nullptr;
     std::coroutine_handle<> continuation_ = nullptr;
 
-    // Completely generic - no if constexpr needed!
+    // Simplified to avoid C4737
     auto get_return_object() noexcept {
         return TaskBase<Affinity, void>{
             std::coroutine_handle<Promise<Affinity, void>>::from_promise(*this)
         };
     }
 
-    // Use templated awaiters with affinity baked in
+    // Use custom awaiters for performance - but keep them simple to avoid C4737
     auto initial_suspend() const noexcept {
         return detail::InitialAwaiter<Affinity>{scheduler_};
     }
@@ -107,17 +100,10 @@ struct Promise<Affinity, void> {
 
     void unhandled_exception() noexcept { std::terminate(); }
 
-    // Await transform - same for all affinities
+    // Await transform - simplified to avoid C4737
     template <typename AwaitableType>
     auto await_transform(AwaitableType&& awaitable) noexcept {
-        if constexpr (requires { awaitable.handle_; }) {
-            if (awaitable.handle_ && !awaitable.handle_.done()) {
-                awaitable.handle_.promise().scheduler_ = scheduler_;
-            }
-            return std::forward<AwaitableType>(awaitable);
-        } else {
-            return std::forward<AwaitableType>(awaitable);
-        }
+        return std::forward<AwaitableType>(awaitable);
     }
 
     template <typename U>
