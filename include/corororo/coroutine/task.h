@@ -5,81 +5,37 @@
 #include <coroutine>
 #include <utility>
 
-// Forward declarations to avoid circular dependency
-namespace CoroRoro {
-    template <typename T> struct AsyncTaskPromise;
-}
-
 namespace CoroRoro
 {
 
-//
-// Task
-//
-//   A coroutine task that executes immediately on the current thread.
-//   Uses std::suspend_never for immediate execution.
-//
-//
-// PromiseBase - Common base for all promise types
-//
+// Forward declarations
 template <typename T>
-struct PromiseBase
-{
-    PromiseBase() = default;
-    virtual ~PromiseBase() = default;
-
-    // Data storage for non-void types
-    T data_{};
-
-    // Thread affinity for this promise
-    ThreadAffinity threadAffinity_ = ThreadAffinity::Main;
-
-    // Common promise methods
-    void unhandled_exception()
-    {
-        std::terminate();
-    }
-};
-
-// Void specialization
-template <>
-struct PromiseBase<void>
-{
-    PromiseBase() = default;
-    virtual ~PromiseBase() = default;
-
-    // Thread affinity for this promise
-    ThreadAffinity threadAffinity_ = ThreadAffinity::Main;
-
-    // Common promise methods
-    void unhandled_exception()
-    {
-        std::terminate();
-    }
-};
+struct AsyncTask;
+template <typename T>
+struct AsyncTaskPromise;
 
 //
-// TaskBase - Base struct for Task and AsyncTask
+// CRTP TaskBase - Base struct for Task and AsyncTask (no virtual functions)
 //
-template <typename T, typename PromiseType, ThreadAffinity Affinity>
+template <typename Derived, typename T, typename PromiseType, ThreadAffinity Affinity>
 struct TaskBase
 {
-    using ResultType = T;
-    using promise_type = PromiseType;
+    using ResultType                         = T;
+    using promise_type                       = PromiseType;
     static constexpr ThreadAffinity affinity = Affinity;
 
     TaskBase() noexcept = default;
 
     TaskBase(std::coroutine_handle<promise_type> coroutine) noexcept
-        : handle_(coroutine)
+    : handle_(coroutine)
     {
     }
 
-    TaskBase(TaskBase const&) = delete;
+    TaskBase(TaskBase const&)            = delete;
     TaskBase& operator=(TaskBase const&) = delete;
 
     TaskBase(TaskBase&& other) noexcept
-        : handle_(other.handle_)
+    : handle_(other.handle_)
     {
         other.handle_ = nullptr;
     }
@@ -92,7 +48,7 @@ struct TaskBase
             {
                 handle_.destroy();
             }
-            handle_ = other.handle_;
+            handle_       = other.handle_;
             other.handle_ = nullptr;
         }
         return *this;
@@ -106,7 +62,16 @@ struct TaskBase
         }
     }
 
+    // CRTP helper - get derived instance
+    auto derived() -> Derived&
+    {
+        return static_cast<Derived&>(*this);
+    }
 
+    auto derived() const -> const Derived&
+    {
+        return static_cast<const Derived&>(*this);
+    }
 
     // Check if the task is done
     auto done() const noexcept -> bool
@@ -139,7 +104,7 @@ struct TaskBase
         return detail::await_suspend(handle_, coroutine);
     }
 
-    // await_resume - non-void specialization
+    // await_resume - non-void specialization (can be overridden by derived classes)
     template <typename U = T, typename = std::enable_if_t<!std::is_void_v<U>>>
     auto await_resume() -> U&
     {
@@ -151,24 +116,25 @@ public:
 };
 
 //
-// Task - Main thread execution
+// Task - Main thread execution (CRTP-based)
 //
 template <typename T = void>
-struct Task : TaskBase<T, detail::Promise<Task<T>, T>, ThreadAffinity::Main>
+struct Task : TaskBase<Task<T>, T, detail::TaskPromise<Task<T>, T>, ThreadAffinity::Main>
 {
-    using Base = TaskBase<T, detail::Promise<Task<T>, T>, ThreadAffinity::Main>;
-    using promise_type = detail::Promise<Task<T>, T>;
+    using Base         = TaskBase<Task<T>, T, detail::TaskPromise<Task<T>, T>, ThreadAffinity::Main>;
+    using promise_type = detail::TaskPromise<Task<T>, T>;
     using Base::Base; // Inherit constructors
 };
 
-// Void specialization for Task
+// Void specialization for Task (CRTP-based)
 template <>
-struct Task<void> : TaskBase<void, detail::Promise<Task<void>, void>, ThreadAffinity::Main>
+struct Task<void> : TaskBase<Task<void>, void, detail::TaskPromise<Task<void>, void>, ThreadAffinity::Main>
 {
-    using Base = TaskBase<void, detail::Promise<Task<void>, void>, ThreadAffinity::Main>;
-    using promise_type = detail::Promise<Task<void>, void>;
+    using Base         = TaskBase<Task<void>, void, detail::TaskPromise<Task<void>, void>, ThreadAffinity::Main>;
+    using promise_type = detail::TaskPromise<Task<void>, void>;
     using Base::Base; // Inherit constructors
 
+    // Override await_resume for void specialization
     void await_resume() const noexcept
     {
         // void tasks don't return a value
@@ -176,31 +142,114 @@ struct Task<void> : TaskBase<void, detail::Promise<Task<void>, void>, ThreadAffi
 };
 
 //
-// AsyncTask - Worker thread execution
+// AsyncTask - Worker thread execution (CRTP-based)
 //
-template <typename T = void>
-struct AsyncTask : TaskBase<T, AsyncTaskPromise<T>, ThreadAffinity::Worker>
+template <typename T>
+struct AsyncTask : TaskBase<AsyncTask<T>, T, AsyncTaskPromise<T>, ThreadAffinity::Worker>
 {
-    using Base = TaskBase<T, AsyncTaskPromise<T>, ThreadAffinity::Worker>;
+    using Base         = TaskBase<AsyncTask<T>, T, AsyncTaskPromise<T>, ThreadAffinity::Worker>;
     using promise_type = AsyncTaskPromise<T>;
     using Base::Base; // Inherit constructors
 };
 
-// Void specialization for AsyncTask
+// Void specialization for AsyncTask (CRTP-based)
 template <>
-struct AsyncTask<void> : TaskBase<void, AsyncTaskPromise<void>, ThreadAffinity::Worker>
+struct AsyncTask<void> : TaskBase<AsyncTask<void>, void, AsyncTaskPromise<void>, ThreadAffinity::Worker>
 {
-    using Base = TaskBase<void, AsyncTaskPromise<void>, ThreadAffinity::Worker>;
+    using Base         = TaskBase<AsyncTask<void>, void, AsyncTaskPromise<void>, ThreadAffinity::Worker>;
     using promise_type = AsyncTaskPromise<void>;
     using Base::Base; // Inherit constructors
 
+    // Override await_resume for void specialization
     void await_resume() const noexcept
     {
         // void tasks don't return a value
     }
 };
 
-} // namespace CoroRoro
+//
+// CRTP Promise for AsyncTask types (defined after AsyncTask to use it)
+//
+template <typename T>
+struct AsyncTaskPromise : detail::PromiseBase<AsyncTaskPromise<T>, T>
+{
+    AsyncTaskPromise()
+    {
+        this->threadAffinity_ = ThreadAffinity::Worker; // AsyncTasks run on worker threads
+    }
 
-// Include the actual definitions after forward declarations
-#include <corororo/coroutine/async_task.h>
+    auto get_return_object() noexcept -> AsyncTask<T>
+    {
+        return AsyncTask<T>{ std::coroutine_handle<AsyncTaskPromise<T>>::from_promise(*this) };
+    }
+
+    void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
+    {
+        if constexpr (!std::is_void_v<T>)
+        {
+            this->data_ = std::move(value);
+        }
+    }
+
+    void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>)
+    {
+        if constexpr (!std::is_void_v<T>)
+        {
+            this->data_ = value;
+        }
+    }
+
+    auto result() -> std::conditional_t<!std::is_void_v<T>, T&, void>
+    {
+        if constexpr (!std::is_void_v<T>)
+        {
+            return this->data_;
+        }
+    }
+
+    auto initial_suspend() const noexcept -> std::suspend_always
+    {
+        return {};
+    }
+
+    auto final_suspend() noexcept -> detail::FinalAwaiter<AsyncTaskPromise<T>>
+    {
+        return {};
+    }
+};
+
+// Void specialization for CRTP AsyncTaskPromise
+template <>
+struct AsyncTaskPromise<void> : detail::PromiseBase<AsyncTaskPromise<void>, void>
+{
+    AsyncTaskPromise()
+    {
+        this->threadAffinity_ = ThreadAffinity::Worker; // AsyncTasks run on worker threads
+    }
+
+    auto get_return_object() noexcept -> AsyncTask<void>
+    {
+        return AsyncTask<void>{ std::coroutine_handle<AsyncTaskPromise<void>>::from_promise(*this) };
+    }
+
+    void return_void() noexcept
+    {
+    }
+
+    void result()
+    {
+        // void tasks don't have a result
+    }
+
+    auto initial_suspend() const noexcept -> std::suspend_always
+    {
+        return {};
+    }
+
+    auto final_suspend() noexcept -> detail::FinalAwaiter<AsyncTaskPromise<void>>
+    {
+        return {};
+    }
+};
+
+} // namespace CoroRoro
