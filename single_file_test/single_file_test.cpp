@@ -10,6 +10,33 @@
 #include <type_traits>
 #include <variant>
 
+// Platform-specific macros for performance annotations
+#if defined(__GNUC__) || defined(__clang__)
+#define FORCE_INLINE inline __attribute__((always_inline))
+#define HOT_PATH __attribute__((hot))
+#define COLD_PATH __attribute__((cold))
+#else
+#define FORCE_INLINE inline
+#define HOT_PATH
+#define COLD_PATH
+#endif
+
+#if __cplusplus > 201703L && defined(__has_cpp_attribute)
+#if __has_cpp_attribute(likely)
+#define LIKELY [[likely]]
+#endif
+#if __has_cpp_attribute(unlikely)
+#define UNLIKELY [[unlikely]]
+#endif
+#endif
+
+#ifndef LIKELY
+#define LIKELY
+#endif
+#ifndef UNLIKELY
+#define UNLIKELY
+#endif
+
 //
 // https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
 //
@@ -88,27 +115,29 @@ public:
     Scheduler(Scheduler&&)                 = delete;
     Scheduler& operator=(Scheduler&&)      = delete;
 
+    // Takes a temporary Task object (an r-value) and assumes ownership of its
+    // coroutine handle. This is a "sink" function.
     template <ThreadAffinity Affinity, typename T>
-    void schedule(detail::TaskBase<Affinity, T> task)
+    HOT_PATH void schedule(detail::TaskBase<Affinity, T>&& task)
     {
         auto handle = task.handle_;
-        if (handle && !handle.done())
+        if (handle && !handle.done()) LIKELY
         {
             handle.promise().scheduler_ = this;
-            // The coroutine's lifetime is now managed by the scheduler's queues.
-            // We must release the handle from the temporary task object to prevent
-            // it from being destroyed when 'task' goes out of scope.
+            // The coroutine's lifetime is now managed by the scheduler. We must
+            // release the handle from the task object that was passed in to
+            // prevent it from being destroyed when it goes out of scope.
             task.handle_ = nullptr;
             scheduleHandleWithAffinity<Affinity>(handle);
         }
     }
 
-    auto runExpiredTasks() -> std::chrono::milliseconds
+    HOT_PATH auto runExpiredTasks() -> std::chrono::milliseconds
     {
         auto start = std::chrono::steady_clock::now();
 
         auto task_to_run = getNextMainThreadTask();
-        if (task_to_run && !task_to_run.done())
+        if (task_to_run && !task_to_run.done()) LIKELY
         {
             task_to_run.resume();
         }
@@ -118,7 +147,7 @@ public:
     }
 
     template <ThreadAffinity Affinity>
-    void scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept
+    FORCE_INLINE HOT_PATH void scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept
     {
         if constexpr (Affinity == ThreadAffinity::Main)
         {
@@ -131,7 +160,7 @@ public:
     }
 
     template <ThreadAffinity Affinity>
-    auto getNextTaskWithAffinity() noexcept -> std::coroutine_handle<>
+    FORCE_INLINE HOT_PATH auto getNextTaskWithAffinity() noexcept -> std::coroutine_handle<>
     {
         if constexpr (Affinity == ThreadAffinity::Main)
         {
@@ -144,7 +173,7 @@ public:
     }
 
 private:
-    void scheduleMainThreadTask(std::coroutine_handle<> handle) noexcept
+    FORCE_INLINE void scheduleMainThreadTask(std::coroutine_handle<> handle) noexcept
     {
         std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
         mainThreadTasks_.push_back(handle);
@@ -154,11 +183,11 @@ private:
     {
     }
 
-    auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
+    FORCE_INLINE auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
     {
         std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
         std::coroutine_handle<>     handle = std::noop_coroutine();
-        if (!mainThreadTasks_.empty())
+        if (!mainThreadTasks_.empty()) LIKELY
         {
             handle = mainThreadTasks_.front();
             mainThreadTasks_.pop_front();
@@ -191,7 +220,7 @@ struct TransferPolicy
     // This function is the key to symmetric transfer. By returning a coroutine handle from
     // `await_suspend`, we suspend the current coroutine and immediately resume the next
     // without growing the call stack.
-    [[nodiscard]] static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
+    [[nodiscard]] FORCE_INLINE HOT_PATH static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
     {
         if constexpr (CurrentAffinity == NextAffinity)
         {
@@ -239,7 +268,7 @@ template <ThreadAffinity From, ThreadAffinity To>
 struct Continuation
 {
     std::coroutine_handle<> handle_;
-    [[nodiscard]] auto      resume(Scheduler* scheduler) noexcept -> std::coroutine_handle<>
+    [[nodiscard]] FORCE_INLINE auto resume(Scheduler* scheduler) noexcept -> std::coroutine_handle<>
     {
         // We can now invoke the correct `TransferPolicy` because we have both `From` and `To`.
         return TransferPolicy<From, To>::transfer(scheduler, handle_);
@@ -292,15 +321,15 @@ struct [[nodiscard]] TaskBase
     TaskBase(TaskBase const&)            = delete;
     TaskBase& operator=(TaskBase const&) = delete;
 
-    TaskBase(TaskBase&& other) noexcept
+    FORCE_INLINE TaskBase(TaskBase&& other) noexcept
     : handle_(other.handle_)
     {
         other.handle_ = nullptr;
     }
 
-    TaskBase& operator=(TaskBase&& other) noexcept
+    FORCE_INLINE TaskBase& operator=(TaskBase&& other) noexcept
     {
-        if (this != &other)
+        if (this != &other) LIKELY
         {
             if (handle_)
             {
@@ -312,7 +341,7 @@ struct [[nodiscard]] TaskBase
         return *this;
     }
 
-    ~TaskBase() noexcept
+    FORCE_INLINE ~TaskBase() noexcept
     {
         if (handle_)
         {
@@ -344,7 +373,7 @@ struct [[nodiscard]] TaskBase
 
     // This is a fallback for awaiting a raw TaskBase. The `await_transform` in the Promise
     // is the primary, more powerful mechanism for handling `co_await`.
-    auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
+    COLD_PATH auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
     {
         handle_.promise().continuation_ = detail::Continuation<Affinity, Affinity>{ coroutine };
         return handle_;
@@ -394,12 +423,12 @@ struct FinalAwaiter
 {
     Promise* promise_;
 
-    bool await_ready() const noexcept
+    FORCE_INLINE bool await_ready() const noexcept
     {
         return false;
     }
 
-    [[nodiscard]] std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) noexcept
+    [[nodiscard]] HOT_PATH std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) noexcept
     {
         return std::visit(
             [&](auto&& cont) noexcept -> std::coroutine_handle<>
@@ -423,7 +452,7 @@ struct FinalAwaiter
             promise_->continuation_);
     }
 
-    void await_resume() const noexcept
+    FORCE_INLINE void await_resume() const noexcept
     {
     }
 };
@@ -441,24 +470,24 @@ struct PromiseBase
     Scheduler*                      scheduler_{ nullptr };
     ContinuationVariant             continuation_{};
 
-    [[nodiscard]] auto get_return_object() noexcept
+    [[nodiscard]] FORCE_INLINE auto get_return_object() noexcept
     {
         return TaskBase<Affinity, T>{
             std::coroutine_handle<Derived>::from_promise(*static_cast<Derived*>(this))
         };
     }
 
-    auto initial_suspend() const noexcept
+    FORCE_INLINE auto initial_suspend() const noexcept
     {
         return InitialAwaiter{};
     }
 
-    auto final_suspend() noexcept
+    FORCE_INLINE auto final_suspend() noexcept
     {
         return FinalAwaiter<Affinity, PromiseBase>{ this };
     }
 
-    void unhandled_exception() noexcept
+    COLD_PATH void unhandled_exception() noexcept
     {
         std::terminate();
     }
@@ -471,19 +500,19 @@ struct PromiseBase
     // 2. Uses `TransferPolicy` to immediately transfer execution to `next_task` or a new task.
     //
     template <ThreadAffinity NextAffinity, typename NextT>
-    auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept
+    HOT_PATH auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept
     {
         struct TransferAwaiter
         {
             Scheduler*                    scheduler_;
             TaskBase<NextAffinity, NextT> next_task_;
 
-            bool await_ready() const noexcept
+            FORCE_INLINE bool await_ready() const noexcept
             {
                 return next_task_.done();
             }
 
-            [[nodiscard]] auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+            [[nodiscard]] HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
             {
                 // Store this coroutine's handle as the continuation for the next task,
                 // preserving the parent's affinity information for the eventual resume.
@@ -495,7 +524,7 @@ struct PromiseBase
                 return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, next_task_.handle_);
             }
 
-            auto await_resume() noexcept
+            FORCE_INLINE auto await_resume() noexcept
             {
                 if constexpr (!std::is_void_v<NextT>)
                 {
@@ -521,17 +550,17 @@ struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 {
     T value_{};
 
-    void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
+    FORCE_INLINE void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
     {
         value_ = std::move(value);
     }
 
-    auto result() noexcept -> T&
+    FORCE_INLINE auto result() noexcept -> T&
     {
         return value_;
     }
 
-    auto result() const noexcept -> const T&
+    FORCE_INLINE auto result() const noexcept -> const T&
     {
         return value_;
     }
@@ -543,7 +572,7 @@ struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 template <ThreadAffinity Affinity>
 struct Promise<Affinity, void> : public PromiseBase<Promise<Affinity, void>, Affinity, void>
 {
-    void return_void() noexcept
+    FORCE_INLINE void return_void() noexcept
     {
     }
 };
