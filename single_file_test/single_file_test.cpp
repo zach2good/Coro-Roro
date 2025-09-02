@@ -4,11 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <coroutine>
-#include <deque>
-#include <functional>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <thread>
 #include <type_traits>
 #include <variant>
@@ -120,7 +117,8 @@ public:
     SPSCQueue& operator=(const SPSCQueue&) = delete;
 
     // Pushed by the producer thread.
-    bool push(T&& value)
+    // Returns false if the queue is full.
+    [[nodiscard]] bool push(T&& value)
     {
         size_t head      = head_.load(std::memory_order_relaxed);
         size_t next_head = (head + 1) % Capacity;
@@ -134,7 +132,8 @@ public:
     }
 
     // Popped by the consumer thread.
-    bool pop(T& value)
+    // Returns false if the queue is empty.
+    [[nodiscard]] bool pop(T& value)
     {
         size_t tail = tail_.load(std::memory_order_relaxed);
         if (tail == head_.load(std::memory_order_acquire))
@@ -213,12 +212,10 @@ public:
     {
         auto start = std::chrono::steady_clock::now();
 
-        auto task_to_run = getNextMainThreadTask();
-        if (task_to_run && !task_to_run.done())
-            LIKELY
-            {
-                task_to_run.resume();
-            }
+        if (auto task_to_run = getNextMainThreadTask())
+        {
+            task_to_run.resume();
+        }
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -273,12 +270,12 @@ private:
         {
             return handle;
         }
-        return std::noop_coroutine();
+        return nullptr;
     }
 
     auto getNextWorkerThreadTask() noexcept -> std::coroutine_handle<>
     {
-        return std::noop_coroutine();
+        return nullptr;
     }
 
     // Place members with alignment requirements first to minimize padding.
@@ -444,13 +441,13 @@ struct [[nodiscard]] TaskBase
     }
 
     template <typename U = T>
-    auto result() noexcept -> std::enable_if_t<!std::is_void_v<U>, U&>
+    [[nodiscard]] auto result() noexcept -> std::enable_if_t<!std::is_void_v<U>, U&>
     {
         return handle_.promise().result();
     }
 
     template <typename U = T>
-    auto result() const noexcept -> std::enable_if_t<!std::is_void_v<U>, const U&>
+    [[nodiscard]] auto result() const noexcept -> std::enable_if_t<!std::is_void_v<U>, const U&>
     {
         return handle_.promise().result();
     }
