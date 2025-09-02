@@ -10,33 +10,6 @@
 #include <type_traits>
 #include <variant>
 
-// Platform-specific macros for performance annotations
-#if defined(__GNUC__) || defined(__clang__)
-#define FORCE_INLINE inline __attribute__((always_inline))
-#define HOT_PATH __attribute__((hot))
-#define COLD_PATH __attribute__((cold))
-#else
-#define FORCE_INLINE inline
-#define HOT_PATH
-#define COLD_PATH
-#endif
-
-#if __cplusplus > 201703L && defined(__has_cpp_attribute)
-#if __has_cpp_attribute(likely)
-#define LIKELY [[likely]]
-#endif
-#if __has_cpp_attribute(unlikely)
-#define UNLIKELY [[unlikely]]
-#endif
-#endif
-
-#ifndef LIKELY
-#define LIKELY
-#endif
-#ifndef UNLIKELY
-#define UNLIKELY
-#endif
-
 //
 // https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
 //
@@ -60,6 +33,36 @@
 //   problem that occurs when a coroutine needs to resume its parent. It correctly preserves the parent's affinity information
 //   with zero runtime overhead.
 //
+
+//
+// Macros
+//
+
+#if defined(__GNUC__) || defined(__clang__)
+#define FORCE_INLINE inline __attribute__((always_inline))
+#define HOT_PATH     __attribute__((hot))
+#define COLD_PATH    __attribute__((cold))
+#else
+#define FORCE_INLINE inline
+#define HOT_PATH
+#define COLD_PATH
+#endif
+
+#if __cplusplus > 201703L && defined(__has_cpp_attribute)
+#if __has_cpp_attribute(likely)
+#define LIKELY [[likely]]
+#endif
+#if __has_cpp_attribute(unlikely)
+#define UNLIKELY [[unlikely]]
+#endif
+#endif
+
+#ifndef LIKELY
+#define LIKELY
+#endif
+#ifndef UNLIKELY
+#define UNLIKELY
+#endif
 
 //
 // Enums
@@ -93,7 +96,53 @@ struct Continuation;
 } // namespace detail
 
 //
-// Simple Scheduler stub for testing
+// Simple, allocation-free, single-producer, single-consumer lock-free queue.
+//
+
+template <typename T, size_t Capacity>
+class SPSCQueue
+{
+public:
+    SPSCQueue() = default;
+
+    SPSCQueue(const SPSCQueue&)            = delete;
+    SPSCQueue& operator=(const SPSCQueue&) = delete;
+
+    // Pushed by the producer thread.
+    bool push(T&& value)
+    {
+        size_t head      = head_.load(std::memory_order_relaxed);
+        size_t next_head = (head + 1) % Capacity;
+        if (next_head == tail_.load(std::memory_order_acquire))
+        {
+            return false; // Full
+        }
+        ring_[head] = std::move(value);
+        head_.store(next_head, std::memory_order_release);
+        return true;
+    }
+
+    // Popped by the consumer thread.
+    bool pop(T& value)
+    {
+        size_t tail = tail_.load(std::memory_order_relaxed);
+        if (tail == head_.load(std::memory_order_acquire))
+        {
+            return false; // Empty
+        }
+        value = std::move(ring_[tail]);
+        tail_.store((tail + 1) % Capacity, std::memory_order_release);
+        return true;
+    }
+
+private:
+    T ring_[Capacity];
+    alignas(64) std::atomic<size_t> head_{ 0 };
+    alignas(64) std::atomic<size_t> tail_{ 0 };
+};
+
+//
+// Simple Scheduler stub for testing (will eventually use)
 //
 
 class Scheduler
@@ -121,15 +170,16 @@ public:
     HOT_PATH void schedule(detail::TaskBase<Affinity, T>&& task)
     {
         auto handle = task.handle_;
-        if (handle && !handle.done()) LIKELY
-        {
-            handle.promise().scheduler_ = this;
-            // The coroutine's lifetime is now managed by the scheduler. We must
-            // release the handle from the task object that was passed in to
-            // prevent it from being destroyed when it goes out of scope.
-            task.handle_ = nullptr;
-            scheduleHandleWithAffinity<Affinity>(handle);
-        }
+        if (handle && !handle.done())
+            LIKELY
+            {
+                handle.promise().scheduler_ = this;
+                // The coroutine's lifetime is now managed by the scheduler. We must
+                // release the handle from the task object that was passed in to
+                // prevent it from being destroyed when it goes out of scope.
+                task.handle_ = nullptr;
+                scheduleHandleWithAffinity<Affinity>(handle);
+            }
     }
 
     HOT_PATH auto runExpiredTasks() -> std::chrono::milliseconds
@@ -137,10 +187,11 @@ public:
         auto start = std::chrono::steady_clock::now();
 
         auto task_to_run = getNextMainThreadTask();
-        if (task_to_run && !task_to_run.done()) LIKELY
-        {
-            task_to_run.resume();
-        }
+        if (task_to_run && !task_to_run.done())
+            LIKELY
+            {
+                task_to_run.resume();
+            }
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -175,8 +226,12 @@ public:
 private:
     FORCE_INLINE void scheduleMainThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
-        mainThreadTasks_.push_back(handle);
+        while (!mainThreadTasks_.push(std::move(handle)))
+        {
+            // Queue is full, this is a busy-wait which is not ideal for a real-world
+            // scenario, but acceptable for this benchmark-oriented test file.
+            // A real implementation would use a condition variable or other mechanism.
+        }
     }
 
     void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept
@@ -185,14 +240,12 @@ private:
 
     FORCE_INLINE auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
     {
-        std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
-        std::coroutine_handle<>     handle = std::noop_coroutine();
-        if (!mainThreadTasks_.empty()) LIKELY
+        std::coroutine_handle<> handle = nullptr;
+        if (mainThreadTasks_.pop(handle))
         {
-            handle = mainThreadTasks_.front();
-            mainThreadTasks_.pop_front();
+            return handle;
         }
-        return handle;
+        return std::noop_coroutine();
     }
 
     auto getNextWorkerThreadTask() noexcept -> std::coroutine_handle<>
@@ -200,10 +253,9 @@ private:
         return std::noop_coroutine();
     }
 
-    std::thread::id                     mainThreadId_;
-    std::atomic<bool>                   running_{ true };
-    std::mutex                          mainThreadTasksMutex_;
-    std::deque<std::coroutine_handle<>> mainThreadTasks_;
+    std::thread::id                         mainThreadId_;
+    std::atomic<bool>                       running_{ true };
+    SPSCQueue<std::coroutine_handle<>, 256> mainThreadTasks_;
 };
 
 namespace detail
@@ -214,6 +266,7 @@ namespace detail
 //
 // A compile-time policy that defines how to transfer execution between coroutines.
 //
+
 template <ThreadAffinity CurrentAffinity, ThreadAffinity NextAffinity>
 struct TransferPolicy
 {
@@ -267,7 +320,7 @@ struct TransferPolicy
 template <ThreadAffinity From, ThreadAffinity To>
 struct Continuation
 {
-    std::coroutine_handle<> handle_;
+    std::coroutine_handle<>         handle_;
     [[nodiscard]] FORCE_INLINE auto resume(Scheduler* scheduler) noexcept -> std::coroutine_handle<>
     {
         // We can now invoke the correct `TransferPolicy` because we have both `From` and `To`.
@@ -289,6 +342,7 @@ struct Continuation
 // type-safe union that avoids dynamic allocation and virtual functions. Access via `std::visit`
 // compiles to an efficient jump table. It is a pure compile-time polymorphism solution.
 //
+
 using ContinuationVariant = std::variant<
     std::monostate,
     Continuation<ThreadAffinity::Main, ThreadAffinity::Main>,
@@ -302,6 +356,7 @@ using ContinuationVariant = std::variant<
 // A move-only, type-erased handle to a coroutine. This is the primary object that users
 // will create and `co_await`. It is non-copyable to ensure clear ownership.
 //
+
 template <ThreadAffinity Affinity, typename T>
 struct [[nodiscard]] TaskBase
 {
@@ -329,15 +384,16 @@ struct [[nodiscard]] TaskBase
 
     FORCE_INLINE TaskBase& operator=(TaskBase&& other) noexcept
     {
-        if (this != &other) LIKELY
-        {
-            if (handle_)
+        if (this != &other)
+            LIKELY
             {
-                handle_.destroy();
+                if (handle_)
+                {
+                    handle_.destroy();
+                }
+                handle_       = other.handle_;
+                other.handle_ = nullptr;
             }
-            handle_       = other.handle_;
-            other.handle_ = nullptr;
-        }
         return *this;
     }
 
@@ -398,6 +454,7 @@ public:
 // function control of the coroutine handle before it begins execution, preventing it from
 // running eagerly on the caller's stack.
 //
+
 struct InitialAwaiter
 {
     constexpr bool await_ready() const noexcept
@@ -418,6 +475,7 @@ struct InitialAwaiter
 // This awaiter is the key to chaining coroutines and performing symmetric transfer. When a
 // coroutine completes, it either resumes its parent or asks the scheduler for a new task.
 //
+
 template <ThreadAffinity Affinity, typename Promise>
 struct FinalAwaiter
 {
@@ -463,8 +521,9 @@ struct FinalAwaiter
 // A CRTP base class containing common logic for a coroutine's promise, such as initial/final
 // suspension, exception handling, and the `await_transform` customization point.
 //
+
 template <typename Derived, ThreadAffinity Affinity, typename T>
-struct PromiseBase
+struct alignas(64) PromiseBase
 {
     static constexpr ThreadAffinity affinity = Affinity;
     Scheduler*                      scheduler_{ nullptr };
@@ -550,6 +609,7 @@ struct PromiseBase
 //
 // Promise <T>
 //
+
 template <ThreadAffinity Affinity, typename T>
 struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 {
@@ -574,6 +634,7 @@ struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 //
 // Promise<void>
 //
+
 template <ThreadAffinity Affinity>
 struct Promise<Affinity, void> : public PromiseBase<Promise<Affinity, void>, Affinity, void>
 {
