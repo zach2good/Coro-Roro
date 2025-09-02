@@ -25,14 +25,14 @@ namespace detail {
 // Simple awaiter for initial suspension - no complex template chains
 struct InitialAwaiter
 {
-    constexpr bool await_ready() const noexcept
+    CORO_HOT CORO_INLINE bool await_ready() const noexcept
     {
-        return false; // Always suspend on initial creation
+        return true; // Don't suspend - let coroutine execute immediately
     }
-    constexpr void await_suspend(std::coroutine_handle<>) const noexcept
+    CORO_HOT CORO_INLINE void await_suspend(std::coroutine_handle<>) const noexcept
     {
     }
-    constexpr void await_resume() const noexcept
+    CORO_HOT CORO_INLINE void await_resume() const noexcept
     {
     }
 };

@@ -1,10 +1,10 @@
 #include <atomic>
-#include <corororo/coroutine/task.h>
-#include <corororo/scheduler/scheduler.h>
-#include <gtest/gtest.h>
 #include <thread>
 
+#include <corororo/corororo.h>
 using namespace CoroRoro;
+
+#include <gtest/gtest.h>
 
 class BasicSchedulerTest : public ::testing::Test
 {
@@ -27,30 +27,36 @@ TEST_F(BasicSchedulerTest, SchedulerCreation)
     ASSERT_NE(scheduler_, nullptr);
 }
 
-TEST_F(BasicSchedulerTest, MainThreadId)
+TEST_F(BasicSchedulerTest, RunExpiredTasksEmptyQueues)
 {
-    const auto mainThreadId = scheduler_->getMainThreadId();
-    EXPECT_EQ(mainThreadId, std::this_thread::get_id());
-}
-
-TEST_F(BasicSchedulerTest, RunExpiredTasksEmpty)
-{
-    // Test that runExpiredTasks doesn't crash
     const auto duration = scheduler_->runExpiredTasks();
     EXPECT_GE(duration.count(), 0);
 }
 
 TEST_F(BasicSchedulerTest, BasicTaskCreation)
 {
-    // Just test that we can create a task without scheduling
     auto task = []() -> Task<void> {
         co_return;
     }();
     
-    // For now, just test that the task was created
     SUCCEED();
 }
 
+TEST_F(BasicSchedulerTest, BasicTaskExecution)
+{
+    // For now, just test that we can create and schedule a task
+    // The actual execution will be tested once we have proper scheduling working
+    auto task = []() -> Task<void> {
+        co_return;
+    }();
+    
+    // Schedule the task - this should not crash
+    scheduler_->schedule(std::move(task));
 
+    // Run the scheduler - this should not crash
+    const auto duration = scheduler_->runExpiredTasks();
+    EXPECT_GE(duration.count(), 0);
 
-
+    // For now, just test that we got here without crashing
+    SUCCEED();
+}

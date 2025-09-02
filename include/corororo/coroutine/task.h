@@ -28,7 +28,7 @@ struct PromiseBase
     std::coroutine_handle<> continuation_handle_ = nullptr;
     detail::ContinuationFnPtr continuation_fn_ = nullptr;
 
-    auto get_return_object() noexcept
+    CORO_HOT CORO_INLINE auto get_return_object() noexcept
     {
         return TaskBase<Affinity, T>{
             std::coroutine_handle<Derived>::from_promise(
@@ -36,23 +36,23 @@ struct PromiseBase
         };
     }
 
-    auto initial_suspend() const noexcept
+    CORO_HOT CORO_INLINE auto initial_suspend() const noexcept
     {
         return InitialAwaiter{};
     }
 
-    auto final_suspend() noexcept
+    CORO_HOT CORO_INLINE auto final_suspend() noexcept
     {
         struct FinalTransitionAwaiter
         {
             PromiseBase* promise_;
 
-            bool await_ready() const noexcept
+            CORO_HOT CORO_INLINE bool await_ready() const noexcept
             {
                 return false;
             }
 
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept
+            CORO_HOT std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept
             {
                 if (promise_->continuation_fn_)
                 {
@@ -60,7 +60,7 @@ struct PromiseBase
                 }
                 return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
             }
-            void await_resume() const noexcept {}
+            CORO_HOT CORO_INLINE void await_resume() const noexcept {}
         };
         return FinalTransitionAwaiter{ this };
     }
@@ -71,19 +71,19 @@ struct PromiseBase
     }
     
     template <ThreadAffinity NextAffinity, typename NextT>
-    auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept
+    CORO_HOT CORO_INLINE auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept
     {
         struct TransferAwaiter
         {
             Scheduler* scheduler_;
             TaskBase<NextAffinity, NextT> next_task_;
 
-            bool await_ready() const noexcept
+            CORO_HOT CORO_INLINE bool await_ready() const noexcept
             {
                 return next_task_.done();
             }
 
-            auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+            CORO_HOT auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
             {
                 auto& promise = next_task_.handle_.promise();
 
@@ -98,7 +98,7 @@ struct PromiseBase
                 return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, next_task_.handle_);
             }
 
-            auto await_resume()
+            CORO_HOT CORO_INLINE auto await_resume()
             {
                 if constexpr (!std::is_void_v<NextT>)
                 {
@@ -186,23 +186,23 @@ struct TaskBase
         }
     }
 
-    auto done() const noexcept -> bool
+    CORO_HOT CORO_INLINE auto done() const noexcept -> bool
     {
         return !handle_ || handle_.done();
     }
 
     template <typename U = T>
-    auto result() -> std::enable_if_t<!std::is_void_v<U>, U&>
+    CORO_HOT CORO_INLINE auto result() -> std::enable_if_t<!std::is_void_v<U>, U&>
     {
         return handle_.promise().result();
     }
 
-    auto await_ready() const noexcept -> bool
+    CORO_HOT CORO_INLINE auto await_ready() const noexcept -> bool
     {
         return done();
     }
 
-    auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
+    CORO_HOT CORO_INLINE auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
     {
         handle_.promise().continuation_handle_ = coroutine;
         // Fallback for generic awaitables - does not support cross-affinity returns.
@@ -210,7 +210,7 @@ struct TaskBase
         return handle_;
     }
 
-    auto await_resume()
+    CORO_HOT CORO_INLINE auto await_resume()
     {
         if constexpr (!std::is_void_v<T>)
         {
