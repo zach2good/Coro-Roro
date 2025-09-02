@@ -14,7 +14,7 @@
 #include <variant>
 #include <vector>
 
-// #include <concurrentqueue/concurrentqueue.h>
+#include <concurrentqueue/concurrentqueue.h>
 // #include <spdlog/sinks/stdout_color_sinks.h>
 // #include <spdlog/spdlog.h>
 
@@ -87,14 +87,7 @@ auto getThreadId() -> std::string
 
 void log(const std::string& message)
 {
-    if (std::this_thread::get_id() == mainThreadString)
-    {
-        std::cout << "[Main Thread] " << message << std::endl;
-    }
-    else
-    {
-        std::cout << "[Worker Thread] " << message << std::endl;
-    }
+    // std::cout << (std::this_thread::get_id() == mainThreadString) ? "[Main Thread] " : "[Worker Thread] " << message << std::endl;
 }
 
 //
@@ -309,7 +302,7 @@ public:
             }
             else
             {
-                // If no main thread tasks, help with worker tasks.
+                // Work-stealing: If no main thread tasks, help with worker tasks.
                 if (auto workerTask = getNextWorkerThreadTask(); workerTask && !workerTask.done())
                 {
                     workerTask.resume();
@@ -360,22 +353,8 @@ private:
         {
             std::coroutine_handle<> task = nullptr;
 
-            // Try to get a task. If the queue is empty, enter a brief spin-wait.
-            if (!workerThreadTasks_.try_dequeue(task))
-            {
-                const auto spinUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
-                while (std::chrono::steady_clock::now() < spinUntil)
-                {
-                    if (workerThreadTasks_.try_dequeue(task))
-                    {
-                        break;
-                    }
-                    std::this_thread::yield();
-                }
-            }
-
-            // If a task was found (either on the first try or during the spin-wait), resume it.
-            if (task)
+            // Try to get a task using lock-free queue
+            if (workerThreadTasks_.try_dequeue(task))
             {
                 task.resume();
             }
@@ -387,7 +366,7 @@ private:
                     lock,
                     [this]
                     {
-                        return !running_.load() || !workerThreadTasks_.empty();
+                        return !running_.load() || workerThreadTasks_.size_approx() > 0;
                     });
             }
         }
@@ -395,12 +374,12 @@ private:
 
     FORCE_INLINE void scheduleMainThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        mainThreadTasks_.try_emplace(handle);
+        mainThreadTasks_.enqueue(handle);
     }
 
     void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        workerThreadTasks_.try_emplace(handle);
+        workerThreadTasks_.enqueue(handle);
         workerCondition_.notify_one();
     }
 
@@ -424,8 +403,8 @@ private:
         return std::noop_coroutine();
     }
 
-    SafeSPSCQueue<std::coroutine_handle<>> mainThreadTasks_;
-    SafeSPSCQueue<std::coroutine_handle<>> workerThreadTasks_;
+    moodycamel::ConcurrentQueue<std::coroutine_handle<>> mainThreadTasks_;
+    moodycamel::ConcurrentQueue<std::coroutine_handle<>> workerThreadTasks_;
 
     std::vector<std::thread> workerThreads_;
     std::mutex               workerMutex_;
@@ -737,6 +716,7 @@ struct PromiseBase
 
     COLD_PATH void unhandled_exception() noexcept
     {
+        log("!!! Unhandled exception !!!");
         std::terminate();
     }
 
@@ -750,24 +730,26 @@ struct PromiseBase
     template <ThreadAffinity NextAffinity, typename NextT>
     HOT_PATH auto await_transform(TaskBase<NextAffinity, NextT>&& nextTask) noexcept
     {
-        // Before we can co_await the next task, we must propagate the scheduler pointer.
-        // This ensures that when the next task completes, its `final_suspend` can correctly
-        // interact with the scheduler to resume the continuation or fetch a new task.
-        nextTask.handle_.promise().scheduler_ = scheduler_;
-
         struct TransferAwaiter
         {
-            Scheduler*                    scheduler_;
-            TaskBase<NextAffinity, NextT> nextTask_;
+            Scheduler*                                                                  scheduler_;
+            std::coroutine_handle<typename TaskBase<NextAffinity, NextT>::promise_type> handle_;
 
             // Explicit constructor to handle initialization from the enclosing function.
             TransferAwaiter(Scheduler* scheduler, TaskBase<NextAffinity, NextT>&& task) noexcept
             : scheduler_(scheduler)
-            , nextTask_(std::move(task))
+            , handle_(task.handle_)
             {
+                // Before we can co_await the next task, we must propagate the scheduler pointer.
+                // This ensures that when the next task completes, its `final_suspend` can correctly
+                // interact with the scheduler to resume the continuation or fetch a new task.
+                handle_.promise().scheduler_ = scheduler_;
+
+                // Release the handle from the task to prevent double destruction
+                task.handle_ = nullptr;
             }
 
-            // This awaiter is move-only, as it contains a move-only TaskBase.
+            // This awaiter is move-only, as it contains a coroutine handle.
             // Explicitly deleting copy operations silences MSVC warning C4625.
             // Defaulting move operations silences MSVC warning C4626.
             TransferAwaiter(const TransferAwaiter&)            = delete;
@@ -777,26 +759,26 @@ struct PromiseBase
 
             FORCE_INLINE bool await_ready() const noexcept
             {
-                return nextTask_.done();
+                return !handle_ || handle_.done();
             }
 
             [[nodiscard]] HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
             {
                 // Store this coroutine's handle as the continuation for the next task,
                 // preserving the parent's affinity information for the eventual resume.
-                nextTask_.handle_.promise().continuation_ = detail::Continuation<NextAffinity, Affinity>{ awaiting_coroutine };
+                handle_.promise().continuation_ = detail::Continuation<NextAffinity, Affinity>{ awaiting_coroutine };
 
                 // Perform the "downward" transfer to start executing next_task. `TransferPolicy`
-                // will either return `next_task_.handle_` directly (same affinity) or schedule
+                // will either return `handle_` directly (same affinity) or schedule
                 // it and return a new task for this thread (different affinity).
-                return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, nextTask_.handle_);
+                return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, handle_);
             }
 
             FORCE_INLINE auto await_resume() const noexcept
             {
                 if constexpr (!std::is_void_v<NextT>)
                 {
-                    return nextTask_.result();
+                    return handle_.promise().result();
                 }
             }
         };
@@ -891,6 +873,7 @@ auto innermostTask() -> AsyncTask<int>
 {
     // Useful to confirm the worker tasks are running on worker threads
     // spdlog::info("Running innermostTask on worker thread");
+    // log("Running innermostTask on worker thread");
 
     ++workerTaskCounter;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -902,6 +885,7 @@ auto innermostTask() -> AsyncTask<int>
 // This task runs on the main thread, but awaits a worker thread task.
 auto innerTask() -> Task<int>
 {
+    log("Running innerTask on main thread");
     // Useful to confirm the main tasks are running on main thread
     // spdlog::info("Running innerTask on main thread");
 
@@ -911,6 +895,7 @@ auto innerTask() -> Task<int>
     // thread would ask for a new main-thread task to run.
     // When innermostTask completes, its FinalAwaiter will resume this coroutine. Because the
     // affinities differ again (Worker -> Main), it's another symmetric transfer.
+    co_await innermostTask();
     co_return co_await innermostTask();
 }
 
@@ -937,6 +922,7 @@ auto outerTask() -> Task<void>
 // The top-level task that starts the entire chain.
 auto outermostTask(size_t numSubTasks) -> Task<int>
 {
+    // log("Starting outermostTask on main thread");
     co_await outerTask();
     int value = 0;
     for (size_t i = 0; i < numSubTasks; ++i)
@@ -944,6 +930,7 @@ auto outermostTask(size_t numSubTasks) -> Task<int>
         value = co_await innerTask();
     }
     ++totalTasksFinishedCounter;
+    // log("Finishing outermostTask on main thread");
     co_return value;
 }
 
@@ -956,8 +943,8 @@ auto main() -> int
 
     {
         const auto numThreads  = 16;
-        const auto numTasks    = 100; // 100 zones
-        const auto numSubTasks = 300; // 300 entities per zone
+        const auto numTasks    = 100;
+        const auto numSubTasks = 300;
 
         Scheduler scheduler(numThreads);
 
@@ -971,7 +958,7 @@ auto main() -> int
         try
         {
             auto duration = scheduler.runExpiredTasks();
-            log("-> Scheduler ran for " + std::to_string(duration.count()) + "ms");
+            std::cout << "-> Scheduler ran for " + std::to_string(duration.count()) + "ms" << std::endl;
         }
         catch (const std::exception& e)
         {
@@ -979,11 +966,11 @@ auto main() -> int
             return 1;
         }
 
-        log("Number of threads: " + std::to_string(numThreads));
-        log("Total tasks scheduled: " + std::to_string(numTasks));
-        log("Total main thread coroutines executed: " + std::to_string(mainThreadTaskCounter.load()));
-        log("Total worker coroutines executed: " + std::to_string(workerTaskCounter.load()));
-        log("Total tasks finished: " + std::to_string(totalTasksFinishedCounter.load()));
+        std::cout << "Number of threads: " + std::to_string(numThreads) << std::endl;
+        std::cout << "Total tasks scheduled: " + std::to_string(numTasks) << std::endl;
+        std::cout << "Total main thread coroutines executed: " + std::to_string(mainThreadTaskCounter.load()) << std::endl;
+        std::cout << "Total worker coroutines executed: " + std::to_string(workerTaskCounter.load()) << std::endl;
+        std::cout << "Total tasks finished: " + std::to_string(totalTasksFinishedCounter.load()) << std::endl;
     }
 
     log("Test completed successfully!");

@@ -46,9 +46,17 @@ CPMAddPackage("gh:gabime/spdlog@1.15.3")
 
 target_link_libraries(single_file_test PRIVATE spdlog::spdlog_header_only Threads::Threads)
 
-target_compile_options(single_file_test PRIVATE
-    /RTC1
-    /analyze
-    # /Wall
-    # /permissive-
-)
+if(MSVC)
+    target_compile_options(single_file_test PRIVATE
+        /RTC1
+        /analyze
+        # /Wall
+        # /permissive-
+    )
+else()
+    target_compile_options(single_file_test PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+endif()
