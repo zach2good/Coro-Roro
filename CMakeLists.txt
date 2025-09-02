@@ -39,24 +39,30 @@ add_executable(single_file_test
 
 target_include_directories(single_file_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/include
 )
 
-CPMAddPackage("gh:gabime/spdlog@1.15.3")
+add_library(concurrentqueue INTERFACE)
+target_include_directories(concurrentqueue SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/ext/include)
 
-target_link_libraries(single_file_test PRIVATE spdlog::spdlog_header_only Threads::Threads)
+target_link_libraries(single_file_test PRIVATE Threads::Threads concurrentqueue)
 
 if(MSVC)
     target_compile_options(single_file_test PRIVATE
-        /RTC1
-        /analyze
-        # /Wall
-        # /permissive-
+        # /RTC1
+        # /analyze
+        /W4 # OK!
+        /WX
+        /permissive-
+
+        # /Wall # Please kill me :(
+        # /wd4820 # 'padding' added to the end of the struct
+        # /wd4710 # function not inlined
+
     )
 else()
     target_compile_options(single_file_test PRIVATE
         -Wall
         -Wextra
-        -Wpedantic
+        -Werror
     )
 endif()

@@ -14,12 +14,15 @@
 #include <variant>
 #include <vector>
 
+// Just in case we're running on Compiler Explorer!
+#if __has_include(<concurrentqueue/concurrentqueue.h>)
 #include <concurrentqueue/concurrentqueue.h>
-// #include <spdlog/sinks/stdout_color_sinks.h>
-// #include <spdlog/spdlog.h>
+#else
+#include <https: //raw.githubusercontent.com/cameron314/concurrentqueue/refs/heads/master/concurrentqueue.h>
+#endif
 
 //
-// https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
+// From: https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
 //
 // A tweak was made to the design of coroutines in 2018 to add a capability called “symmetric transfer”,
 // which allows you to suspend one coroutine and resume another coroutine without consuming any
@@ -28,18 +31,14 @@
 //
 
 //
-// Symmetric Transfer: Your understanding and the implementation are correct. The key is that await_suspend
+// Symmetric Transfer: Your understanding and the implementation are correct. The key is that `await_suspend`
 // returns another coroutine handle (std::coroutine_handle<>). This tells the compiler to switch directly
 // to the new coroutine's context without unwinding the stack, which is the core of "symmetric transfer".
 //
-// I've updated the comments to be more concise and to clearly distinguish between:
-//
+// In this codebase:
 // - Direct Transfer (Fast Path): Occurs when co_awaiting a task of the same affinity. This is like a non-blocking function call.
-// - Symmetric Transfer (Slow Path): Occurs when co_awaiting a task of a different affinity. The new task is scheduled, and
-//   the current thread immediately requests a different task to execute to avoid being idle.
-// - Continuation & variant: The explanations are sound. This pattern is a clean, compile-time solution to the type-erasure
-//   problem that occurs when a coroutine needs to resume its parent. It correctly preserves the parent's affinity information
-//   with zero runtime overhead.
+// - Symmetric Transfer (Slow Path): Occurs when co_awaiting a task of a different affinity. The new task is sent to the scheduler, and
+//   the current thread immediately requests a different task to execute to avoid being idle. We then symmetric transfer to the new task.
 //
 
 //
@@ -56,133 +55,25 @@
 #define COLD_PATH
 #endif
 
-#if __cplusplus > 201703L && defined(__has_cpp_attribute)
-#if __has_cpp_attribute(likely)
-#define LIKELY [[likely]]
-#endif
-#if __has_cpp_attribute(unlikely)
+#define LIKELY   [[likely]]
 #define UNLIKELY [[unlikely]]
-#endif
-#endif
 
-#ifndef LIKELY
-#define LIKELY
-#endif
-#ifndef UNLIKELY
-#define UNLIKELY
-#endif
+#define CACHE_ALIGN alignas(std::hardware_destructive_interference_size)
+
+#define NO_DISCARD [[nodiscard]]
+
+// TODO
+#define ASSERT_UNREACHABLE() std::abort()
 
 //
 // Logging
 //
 
-auto mainThreadString = std::this_thread::get_id();
-
-auto getThreadId() -> std::string
+void coro_log(const std::string& message)
 {
-    std::stringstream ss;
-    ss << std::this_thread::get_id();
-    return ss.str();
+    static auto mainThreadString = std::this_thread::get_id();
+    std::cout << ((std::this_thread::get_id() == mainThreadString) ? "[Main Thread] " : "[Worker Thread] ") << message << std::endl;
 }
-
-void log(const std::string& message)
-{
-    // std::cout << (std::this_thread::get_id() == mainThreadString) ? "[Main Thread] " : "[Worker Thread] " << message << std::endl;
-}
-
-//
-// Safe Single-Producer Single-Consumer Queue
-// Godbolt replacement for moodycamel::ConcurrentQueue
-//
-
-template <typename T>
-class SafeSPSCQueue
-{
-public:
-    explicit SafeSPSCQueue(size_t capacity = 1024)
-    : capacity_(capacity)
-    , buffer_(new T[capacity])
-    , readPos_(0)
-    , writePos_(0)
-    , size_(0)
-    {
-    }
-
-    ~SafeSPSCQueue()
-    {
-        // Clean up any remaining items
-        while (size_.load(std::memory_order_acquire) > 0)
-        {
-            buffer_[readPos_].~T();
-            readPos_ = (readPos_ + 1) % capacity_;
-            size_.fetch_sub(1, std::memory_order_relaxed);
-        }
-        delete[] buffer_;
-    }
-
-    // Copy and move operations
-    SafeSPSCQueue(const SafeSPSCQueue&)            = delete;
-    SafeSPSCQueue& operator=(const SafeSPSCQueue&) = delete;
-    SafeSPSCQueue(SafeSPSCQueue&&)                 = delete;
-    SafeSPSCQueue& operator=(SafeSPSCQueue&&)      = delete;
-
-    // Producer methods (single producer)
-    template <typename... Args>
-    bool try_emplace(Args&&... args) noexcept
-    {
-        size_t currentSize = size_.load(std::memory_order_acquire);
-        if (currentSize >= capacity_)
-        {
-            return false; // Queue full
-        }
-
-        // Construct the item in place
-        new (&buffer_[writePos_]) T(std::forward<Args>(args)...);
-        writePos_ = (writePos_ + 1) % capacity_;
-        size_.fetch_add(1, std::memory_order_release);
-        return true;
-    }
-
-    // Consumer methods (single consumer)
-    bool try_dequeue(T& item) noexcept
-    {
-        size_t currentSize = size_.load(std::memory_order_acquire);
-        if (currentSize == 0)
-        {
-            return false; // Queue empty
-        }
-
-        // Move the item out
-        item = std::move(buffer_[readPos_]);
-        buffer_[readPos_].~T();
-        readPos_ = (readPos_ + 1) % capacity_;
-        size_.fetch_sub(1, std::memory_order_release);
-        return true;
-    }
-
-    // Utility methods
-    size_t size() const noexcept
-    {
-        return size_.load(std::memory_order_acquire);
-    }
-
-    bool empty() const noexcept
-    {
-        return size_.load(std::memory_order_acquire) == 0;
-    }
-
-    size_t capacity() const noexcept
-    {
-        return capacity_;
-    }
-
-private:
-    const size_t        capacity_;
-    T*                  buffer_;
-    size_t              readPos_;
-    size_t              writePos_;
-    std::atomic<size_t> size_;
-};
 
 //
 // Enums
@@ -190,8 +81,8 @@ private:
 
 enum class ThreadAffinity : uint8_t
 {
-    Main   = 0, // Represents the main application thread.
-    Worker = 1, // Represents any thread in the worker pool.
+    Main   = 0,
+    Worker = 1,
 };
 
 //
@@ -216,15 +107,9 @@ struct Continuation;
 } // namespace detail
 
 //
-// Simple Scheduler stub for testing (will eventually use)
+// Simple Scheduler for use demonstrating the rest of the
+// coroutine machinery
 //
-
-#if defined(_MSC_VER)
-// Suppress warnings about padding, which is intentional. By reordering members
-// from largest to smallest, we minimize padding, but some may still exist.
-#pragma warning(push)
-#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
-#endif
 
 class Scheduler final
 {
@@ -246,11 +131,9 @@ public:
 
     ~Scheduler()
     {
-        // Signal all threads to stop
         running_.store(false);
         workerCondition_.notify_all();
 
-        // Join all threads
         for (auto& thread : workerThreads_)
         {
             if (thread.joinable())
@@ -275,16 +158,18 @@ public:
     template <ThreadAffinity Affinity, typename T>
     HOT_PATH void schedule(detail::TaskBase<Affinity, T>&& task)
     {
-        auto handle = task.handle_;
+        const auto handle = task.handle_;
         if (handle && !handle.done())
             LIKELY
             {
                 inFlightTasks_.fetch_add(1, std::memory_order_relaxed);
                 handle.promise().scheduler_ = this;
+
                 // The coroutine's lifetime is now managed by the scheduler. We must
                 // release the handle from the task object that was passed in to
                 // prevent it from being destroyed when it goes out of scope.
                 task.handle_ = nullptr;
+
                 scheduleHandleWithAffinity<Affinity>(handle);
             }
     }
@@ -293,7 +178,6 @@ public:
     {
         auto start = std::chrono::steady_clock::now();
 
-        // Main thread assists in running tasks until all scheduled tasks are complete.
         while (inFlightTasks_.load(std::memory_order_acquire) > 0)
         {
             if (auto task = getNextMainThreadTask(); task && !task.done())
@@ -302,7 +186,9 @@ public:
             }
             else
             {
-                // Work-stealing: If no main thread tasks, help with worker tasks.
+                // If the main thread runs out of work and we've still got tasks in flight,
+                // we should help out by running worker tasks until everything is done, or
+                // until we get more main thread tasks.
                 if (auto workerTask = getNextWorkerThreadTask(); workerTask && !workerTask.done())
                 {
                     workerTask.resume();
@@ -315,14 +201,13 @@ public:
             }
         }
 
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start);
+        const auto end = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     }
 
     template <ThreadAffinity Affinity>
     FORCE_INLINE HOT_PATH void scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept
     {
-        // NOTE: This correctly schedules the coroutine on the appropriate thread, no need for std::thread::id
         if constexpr (Affinity == ThreadAffinity::Main)
         {
             scheduleMainThreadTask(handle);
@@ -353,7 +238,7 @@ private:
         {
             std::coroutine_handle<> task = nullptr;
 
-            // Try to get a task using lock-free queue
+            // Try to get a task
             if (workerThreadTasks_.try_dequeue(task))
             {
                 task.resume();
@@ -424,12 +309,12 @@ namespace detail
 //
 
 template <ThreadAffinity CurrentAffinity, ThreadAffinity NextAffinity>
-struct TransferPolicy
+struct TransferPolicy final
 {
     // This function is the key to symmetric transfer. By returning a coroutine handle from
     // `await_suspend`, we suspend the current coroutine and immediately resume the next
     // without growing the call stack.
-    [[nodiscard]] FORCE_INLINE HOT_PATH static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
+    NO_DISCARD FORCE_INLINE HOT_PATH static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
     {
         if constexpr (CurrentAffinity == NextAffinity)
         {
@@ -474,10 +359,10 @@ struct TransferPolicy
 //
 
 template <ThreadAffinity From, ThreadAffinity To>
-struct Continuation
+struct CACHE_ALIGN Continuation final
 {
-    std::coroutine_handle<>         handle_;
-    [[nodiscard]] FORCE_INLINE auto resume(Scheduler* scheduler) const noexcept -> std::coroutine_handle<>
+    std::coroutine_handle<>      handle_;
+    NO_DISCARD FORCE_INLINE auto resume(Scheduler* scheduler) const noexcept -> std::coroutine_handle<>
     {
         // We can now invoke the correct `TransferPolicy` because we have both `From` and `To`.
         return TransferPolicy<From, To>::transfer(scheduler, handle_);
@@ -514,7 +399,7 @@ using ContinuationVariant = std::variant<
 //
 
 template <ThreadAffinity Affinity, typename T>
-struct [[nodiscard]] TaskBase
+struct NO_DISCARD TaskBase final
 {
     using ResultType = T;
 
@@ -567,13 +452,13 @@ struct [[nodiscard]] TaskBase
     }
 
     template <typename U = T>
-    [[nodiscard]] auto result() noexcept -> std::enable_if_t<!std::is_void_v<U>, U&>
+    NO_DISCARD auto result() noexcept -> std::enable_if_t<!std::is_void_v<U>, U&>
     {
         return handle_.promise().result();
     }
 
     template <typename U = T>
-    [[nodiscard]] auto result() const noexcept -> std::enable_if_t<!std::is_void_v<U>, const U&>
+    NO_DISCARD auto result() const noexcept -> std::enable_if_t<!std::is_void_v<U>, const U&>
     {
         return handle_.promise().result();
     }
@@ -587,8 +472,11 @@ struct [[nodiscard]] TaskBase
     // is the primary, more powerful mechanism for handling `co_await`.
     COLD_PATH auto await_suspend(std::coroutine_handle<> coroutine) const noexcept -> std::coroutine_handle<>
     {
-        handle_.promise().continuation_ = detail::Continuation<Affinity, Affinity>{ coroutine };
-        return handle_;
+        // "fallback", lol.
+        ASSERT_UNREACHABLE();
+
+        // handle_.promise().continuation_ = detail::Continuation<Affinity, Affinity>{ coroutine };
+        // return handle_;
     }
 
     auto await_resume() const noexcept
@@ -611,11 +499,11 @@ public:
 // running eagerly on the caller's stack.
 //
 
-struct InitialAwaiter
+struct InitialAwaiter final
 {
     constexpr bool await_ready() const noexcept
     {
-        return false;
+        return false; // Always suspend
     }
     constexpr void await_suspend(std::coroutine_handle<>) const noexcept
     {
@@ -633,22 +521,22 @@ struct InitialAwaiter
 //
 
 template <ThreadAffinity Affinity, typename Promise>
-struct FinalAwaiter
+struct FinalAwaiter final
 {
     Promise* promise_;
 
     FORCE_INLINE bool await_ready() const noexcept
     {
-        return false;
+        return false; // Always suspend
     }
 
-    [[nodiscard]] HOT_PATH std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) const noexcept
+    NO_DISCARD HOT_PATH std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) const noexcept
     {
         return std::visit(
-            [&](auto&& cont) noexcept -> std::coroutine_handle<>
+            [&](auto&& continuation) noexcept -> std::coroutine_handle<>
             {
-                using TCont = std::decay_t<decltype(cont)>;
-                if constexpr (std::is_same_v<TCont, std::monostate>)
+                using TContinuation = std::decay_t<decltype(continuation)>;
+                if constexpr (std::is_same_v<TContinuation, std::monostate>)
                 {
                     // This was a top-level task. It has finished.
                     promise_->scheduler_->notifyTaskComplete();
@@ -663,7 +551,7 @@ struct FinalAwaiter
                     // Resume Parent Coroutine:
                     // A continuation exists. Resume it using the `Continuation` object, which
                     // contains the correct `TransferPolicy`.
-                    return cont.resume(promise_->scheduler_);
+                    return continuation.resume(promise_->scheduler_);
                 }
             },
             promise_->continuation_);
@@ -677,27 +565,20 @@ struct FinalAwaiter
 //
 // PromiseBase
 //
-// A CRTP base class containing common logic for a coroutine's promise, such as initial/final
-// suspension, exception handling, and the `await_transform` customization point.
+// The promise is the core component of a coroutine, managing its state and interactions with the
+// scheduler. It provides the necessary hooks for suspension, resumption, and exception handling.
+// It also provides storage for the coroutine's state and result.
 //
-
-#if defined(_MSC_VER)
-// Suppress warnings about padding, which is intentional. By reordering members
-// from largest to smallest, we minimize padding, but some may still exist.
-#pragma warning(push)
-#pragma warning(disable : 4324) // C4324: structure was padded due to alignment specifier
-#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
-#endif
 
 template <typename Derived, ThreadAffinity Affinity, typename T>
 struct PromiseBase
 {
-    // Place members in descending order of alignment/size to minimize padding.
-    Scheduler*                      scheduler_{ nullptr };
-    ContinuationVariant             continuation_{};
+    Scheduler*          scheduler_{ nullptr };
+    ContinuationVariant continuation_{};
+
     static constexpr ThreadAffinity affinity = Affinity;
 
-    [[nodiscard]] FORCE_INLINE auto get_return_object() noexcept
+    NO_DISCARD FORCE_INLINE auto get_return_object() noexcept
     {
         return TaskBase<Affinity, T>{
             std::coroutine_handle<Derived>::from_promise(*static_cast<Derived*>(this))
@@ -716,7 +597,8 @@ struct PromiseBase
 
     COLD_PATH void unhandled_exception() noexcept
     {
-        log("!!! Unhandled exception !!!");
+        // TODO
+        coro_log("!!! Unhandled exception !!!");
         std::terminate();
     }
 
@@ -730,10 +612,12 @@ struct PromiseBase
     template <ThreadAffinity NextAffinity, typename NextT>
     HOT_PATH auto await_transform(TaskBase<NextAffinity, NextT>&& nextTask) noexcept
     {
-        struct TransferAwaiter
+        struct TransferAwaiter final
         {
-            Scheduler*                                                                  scheduler_;
-            std::coroutine_handle<typename TaskBase<NextAffinity, NextT>::promise_type> handle_;
+            using promise_type = typename TaskBase<NextAffinity, NextT>::promise_type;
+
+            Scheduler*                          scheduler_;
+            std::coroutine_handle<promise_type> handle_;
 
             // Explicit constructor to handle initialization from the enclosing function.
             TransferAwaiter(Scheduler* scheduler, TaskBase<NextAffinity, NextT>&& task) noexcept
@@ -762,7 +646,7 @@ struct PromiseBase
                 return !handle_ || handle_.done();
             }
 
-            [[nodiscard]] HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+            NO_DISCARD HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
             {
                 // Store this coroutine's handle as the continuation for the next task,
                 // preserving the parent's affinity information for the eventual resume.
@@ -792,22 +676,12 @@ struct PromiseBase
     }
 };
 
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-
 //
-// Promise <T>
+// Promise for <T>
 //
-
-#if defined(_MSC_VER)
-// Suppress warnings about padding, which is intentional.
-#pragma warning(push)
-#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
-#endif
 
 template <ThreadAffinity Affinity, typename T>
-struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
+struct Promise final : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 {
     T value_{};
 
@@ -833,25 +707,21 @@ struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 };
 
 //
-// Promise<void>
+// Promise for <void>
 //
 
 template <ThreadAffinity Affinity>
-struct Promise<Affinity, void> : public PromiseBase<Promise<Affinity, void>, Affinity, void>
+struct Promise<Affinity, void> final : public PromiseBase<Promise<Affinity, void>, Affinity, void>
 {
     FORCE_INLINE void return_void() noexcept
     {
     }
 };
 
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-
 } // namespace detail
 
 //
-// Task Aliases
+// User-facing Task Aliases
 //
 
 template <typename T = void>
@@ -861,56 +731,40 @@ template <typename T>
 using AsyncTask = detail::TaskBase<ThreadAffinity::Worker, T>;
 
 //
-// Desired usage
+// "Application Code"
 //
 
-std::atomic<size_t> mainThreadTaskCounter{ 0 };
-std::atomic<size_t> workerTaskCounter{ 0 };
-std::atomic<size_t> totalTasksFinishedCounter{ 0 };
+CACHE_ALIGN std::atomic<size_t> mainThreadTaskCounter{ 0 };
+CACHE_ALIGN std::atomic<size_t> workerTaskCounter{ 0 };
+CACHE_ALIGN std::atomic<size_t> totalTasksFinishedCounter{ 0 };
 
-// This task runs on a worker thread and returns an integer.
 auto innermostTask() -> AsyncTask<int>
 {
     // Useful to confirm the worker tasks are running on worker threads
-    // spdlog::info("Running innermostTask on worker thread");
-    // log("Running innermostTask on worker thread");
+    // coro_log("Running innermostTask on worker thread");
 
     ++workerTaskCounter;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    co_return 100; // MSVC Crashes here!
-    // Exception has occurred: W32/0xC0000005
-    // Unhandled exception at 0x00007FF604041276 in single_file_test.exe: 0xC0000005: Access violation reading location 0xFFFFFFFFFFFFFFFF.
+    co_return 100;
 }
 
-// This task runs on the main thread, but awaits a worker thread task.
 auto innerTask() -> Task<int>
 {
-    log("Running innerTask on main thread");
     // Useful to confirm the main tasks are running on main thread
-    // spdlog::info("Running innerTask on main thread");
+    // coro_log("Running innerTask on main thread");
 
     ++mainThreadTaskCounter;
-    // co_await triggers await_transform. Because the affinities differ (Main -> Worker),
-    // this is a "slow path" symmetric transfer. The worker task is scheduled, and the main
-    // thread would ask for a new main-thread task to run.
-    // When innermostTask completes, its FinalAwaiter will resume this coroutine. Because the
-    // affinities differ again (Worker -> Main), it's another symmetric transfer.
     co_await innermostTask();
     co_return co_await innermostTask();
 }
 
-// A simple task that chains another task.
 auto middleTask() -> Task<void>
 {
     ++mainThreadTaskCounter;
-    // co_await triggers await_transform. Because the affinities match (Main -> Main),
-    // this is a "fast path" direct transfer. Execution jumps into innerTask immediately
-    // without involving the scheduler.
     co_await innerTask();
     co_return;
 }
 
-// Another chaining task.
 auto outerTask() -> Task<void>
 {
     ++mainThreadTaskCounter;
@@ -919,60 +773,59 @@ auto outerTask() -> Task<void>
     co_return;
 }
 
-// The top-level task that starts the entire chain.
 auto outermostTask(size_t numSubTasks) -> Task<int>
 {
-    // log("Starting outermostTask on main thread");
+    // coro_log("Starting outermostTask on main thread");
+
     co_await outerTask();
+
     int value = 0;
     for (size_t i = 0; i < numSubTasks; ++i)
     {
         value = co_await innerTask();
     }
+
     ++totalTasksFinishedCounter;
-    // log("Finishing outermostTask on main thread");
+
+    // coro_log("Finishing outermostTask on main thread");
+
     co_return value;
 }
 
 auto main() -> int
 {
-    // auto console = spdlog::stdout_color_mt("console");
-    // spdlog::set_default_logger(console);
-    // spdlog::set_pattern("[%H:%M:%S][t:%t] %v");
-    // spdlog::flush_on(spdlog::level::err);
-
     {
         const auto numThreads  = 16;
-        const auto numTasks    = 100;
+        const auto numTasks    = 10;
         const auto numSubTasks = 300;
 
         Scheduler scheduler(numThreads);
 
-        log("Scheduling outer tasks...");
+        coro_log("Scheduling outer tasks...");
         for (int i = 0; i < numTasks; ++i)
         {
             scheduler.schedule(outermostTask(numSubTasks));
         }
 
-        log("Running tasks...");
+        coro_log("Running tasks...");
         try
         {
             auto duration = scheduler.runExpiredTasks();
-            std::cout << "-> Scheduler ran for " + std::to_string(duration.count()) + "ms" << std::endl;
+            coro_log("-> Scheduler ran for " + std::to_string(duration.count()) + "ms");
         }
         catch (const std::exception& e)
         {
-            log("Error occurred while running tasks: " + std::string(e.what()));
+            coro_log("Error occurred while running tasks: " + std::string(e.what()));
             return 1;
         }
 
-        std::cout << "Number of threads: " + std::to_string(numThreads) << std::endl;
-        std::cout << "Total tasks scheduled: " + std::to_string(numTasks) << std::endl;
-        std::cout << "Total main thread coroutines executed: " + std::to_string(mainThreadTaskCounter.load()) << std::endl;
-        std::cout << "Total worker coroutines executed: " + std::to_string(workerTaskCounter.load()) << std::endl;
-        std::cout << "Total tasks finished: " + std::to_string(totalTasksFinishedCounter.load()) << std::endl;
+        coro_log("Number of threads: " + std::to_string(numThreads));
+        coro_log("Total tasks scheduled: " + std::to_string(numTasks));
+        coro_log("Total main thread coroutines executed: " + std::to_string(mainThreadTaskCounter.load()));
+        coro_log("Total worker coroutines executed: " + std::to_string(workerTaskCounter.load()));
+        coro_log("Total tasks finished: " + std::to_string(totalTasksFinishedCounter.load()));
     }
 
-    log("Test completed successfully!");
+    coro_log("Test completed successfully!");
     return 0;
 }
