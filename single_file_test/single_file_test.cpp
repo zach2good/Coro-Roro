@@ -13,8 +13,8 @@
 
 #include <concurrentqueue/concurrentqueue.h>
 
-#include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
 
 //
 // https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
@@ -117,7 +117,6 @@ class Scheduler
 public:
     explicit Scheduler(size_t workerThreadCount = 4)
     {
-        mainThreadId_ = std::this_thread::get_id();
         running_.store(true);
 
         workerThreads_.reserve(workerThreadCount);
@@ -203,7 +202,6 @@ public:
 
         // Signal workers to stop and wait for them to finish.
         running_.store(false);
-        workerCondition_.notify_all();
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -212,6 +210,7 @@ public:
     template <ThreadAffinity Affinity>
     FORCE_INLINE HOT_PATH void scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept
     {
+        // NOTE: This correctly schedules the coroutine on the appropriate thread, no need for std::thread::id
         if constexpr (Affinity == ThreadAffinity::Main)
         {
             scheduleMainThreadTask(handle);
@@ -225,7 +224,7 @@ public:
     template <ThreadAffinity Affinity>
     FORCE_INLINE HOT_PATH auto getNextTaskWithAffinity() noexcept -> std::coroutine_handle<>
     {
-        if (std::this_thread::get_id() == mainThreadId_)
+        if constexpr (Affinity == ThreadAffinity::Main)
         {
             return getNextMainThreadTask();
         }
@@ -302,10 +301,6 @@ private:
 
     std::vector<std::thread> workerThreads_;
 
-    std::mutex              workerMutex_;
-    std::condition_variable workerCondition_;
-
-    std::thread::id     mainThreadId_;
     std::atomic<bool>   running_{ true };
     std::atomic<size_t> inFlightTasks_{ 0 };
 };
