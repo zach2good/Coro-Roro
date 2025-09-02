@@ -18,7 +18,10 @@
 #if __has_include(<concurrentqueue/concurrentqueue.h>)
 #include <concurrentqueue/concurrentqueue.h>
 #else
-#include <https: //raw.githubusercontent.com/cameron314/concurrentqueue/refs/heads/master/concurrentqueue.h>
+#define RUNNING_ON_GODBOLT
+// clang-format off
+#include <https://raw.githubusercontent.com/cameron314/concurrentqueue/refs/heads/master/concurrentqueue.h>
+// clang-format on
 #endif
 
 //
@@ -795,9 +798,15 @@ auto outermostTask(size_t numSubTasks) -> Task<int>
 auto main() -> int
 {
     {
+#if !defined(RUNNING_ON_GODBOLT)
         const auto numThreads  = 16;
         const auto numTasks    = 10;
         const auto numSubTasks = 300;
+#else
+        const auto numThreads  = 2;
+        const auto numTasks    = 10;
+        const auto numSubTasks = 20;
+#endif
 
         Scheduler scheduler(numThreads);
 
