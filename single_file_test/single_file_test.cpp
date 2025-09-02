@@ -480,27 +480,6 @@ struct [[nodiscard]] TaskBase
         return handle_.promise().result();
     }
 
-    auto await_ready() const noexcept -> bool
-    {
-        return done();
-    }
-
-    // This is a fallback for awaiting a raw TaskBase. The `await_transform` in the Promise
-    // is the primary, more powerful mechanism for handling `co_await`.
-    COLD_PATH auto await_suspend(std::coroutine_handle<> coroutine) const noexcept -> std::coroutine_handle<>
-    {
-        handle_.promise().continuation_ = detail::Continuation<Affinity, Affinity>{ coroutine };
-        return handle_;
-    }
-
-    auto await_resume() const noexcept
-    {
-        if constexpr (!std::is_void_v<T>)
-        {
-            return result();
-        }
-    }
-
 public:
     std::coroutine_handle<promise_type> handle_ = nullptr;
 };
@@ -592,7 +571,7 @@ struct FinalAwaiter
 #endif
 
 template <typename Derived, ThreadAffinity Affinity, typename T>
-struct alignas(64) PromiseBase
+struct PromiseBase
 {
     // Place members in descending order of alignment/size to minimize padding.
     Scheduler*                      scheduler_{ nullptr };
@@ -661,7 +640,7 @@ struct alignas(64) PromiseBase
                 return nextTask_.done();
             }
 
-            [[nodiscard]] HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) const noexcept -> std::coroutine_handle<>
+            [[nodiscard]] HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
             {
                 // Store this coroutine's handle as the continuation for the next task,
                 // preserving the parent's affinity information for the eventual resume.
@@ -713,6 +692,11 @@ struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
     FORCE_INLINE void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
     {
         value_ = std::move(value);
+    }
+
+    FORCE_INLINE void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>)
+    {
+        value_ = value;
     }
 
     FORCE_INLINE auto result() noexcept -> T&
@@ -770,7 +754,9 @@ auto innermostTask() -> AsyncTask<int>
 
     ++workerTaskCounter;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    co_return 100;
+    co_return 100; // MSVC Crashes here!
+    // Exception has occurred: W32/0xC0000005
+    // Unhandled exception at 0x00007FF604041276 in single_file_test.exe: 0xC0000005: Access violation reading location 0xFFFFFFFFFFFFFFFF.
 }
 
 // This task runs on the main thread, but awaits a worker thread task.
@@ -813,7 +799,6 @@ auto outermostTask() -> Task<int>
 {
     co_await outerTask();
     auto result = co_await innerTask();
-    std::ignore = result;
     ++totalTasksFinishedCounter;
     co_return result;
 }
