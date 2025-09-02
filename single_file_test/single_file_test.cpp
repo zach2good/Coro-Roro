@@ -1,3 +1,6 @@
+// MSVC: /std:c++20 /W4 /Wall /permissive-
+// GCC/Clang: -std=c++20 -Wall -Wextra
+
 #include <atomic>
 #include <chrono>
 #include <coroutine>
@@ -174,6 +177,8 @@ public:
     {
         mainThreadId_ = std::this_thread::get_id();
         running_.store(true);
+
+        std::ignore = workerThreadCount;
     }
 
     ~Scheduler()
@@ -258,6 +263,7 @@ private:
 
     void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept
     {
+        std::ignore = handle;
     }
 
     FORCE_INLINE auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
@@ -665,6 +671,12 @@ struct alignas(64) PromiseBase
 // Promise <T>
 //
 
+#if defined(_MSC_VER)
+// Suppress warnings about padding, which is intentional.
+#pragma warning(push)
+#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
+#endif
+
 template <ThreadAffinity Affinity, typename T>
 struct Promise : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 {
@@ -697,6 +709,10 @@ struct Promise<Affinity, void> : public PromiseBase<Promise<Affinity, void>, Aff
     {
     }
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace detail
 
