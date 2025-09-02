@@ -4,28 +4,46 @@
 #include <chrono>
 #include <coroutine>
 #include <deque>
-#include <functional> // Required for std::function
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <type_traits> // For std::enable_if_t, std::is_void_v
-#include <variant> // For std::variant approach
+#include <type_traits>
+#include <variant>
 
-// ThreadAffinity enum remains the same
-enum class ThreadAffinity : uint32_t
+//
+// Enums
+//
+
+enum class ThreadAffinity : uint8_t
 {
     Main   = 0,
-    Worker = 1
+    Worker = 1,
 };
 
+//
 // Forward declarations
+//
+
 class Scheduler;
+
+template <ThreadAffinity Affinity>
+struct InitialAwaiter;
+
+template <ThreadAffinity Affinity>
+struct FinalAwaiter;
+
+template <ThreadAffinity Affinity, typename T>
+struct Promise;
 
 template <ThreadAffinity Affinity, typename T>
 struct TaskBase;
 
+//
 // The TransferPolicy struct, as you suggested, to handle transition logic.
+//
+
 template <ThreadAffinity CurrentAffinity, ThreadAffinity NextAffinity>
 struct TransferPolicy
 {
@@ -33,43 +51,62 @@ struct TransferPolicy
     {
         if constexpr (CurrentAffinity == NextAffinity)
         {
-            // Same thread affinity - NO transfer needed, resume the new task immediately!
+            // Same thread affinity - NO transfer needed, resume the new task on this thread immediately!
             return handle;
         }
         else
         {
-            // Different thread affinity - schedule the new task and perform a symmetric transfer.
+            // Different thread affinity - send the incoming task handle to the scheduler
             scheduler->scheduleHandleWithAffinity<NextAffinity>(handle);
+
+            // Ask the scheduler for work that's relevant for THIS thread so that we can perform a symmetric transfer.
             return scheduler->getNextTaskWithAffinity<CurrentAffinity>();
         }
     }
 };
-
 
 namespace detail
 {
 
 // Awaiter for the initial suspension point of a Task.
 // It simply suspends the coroutine; the Scheduler is responsible for queuing it.
+// NOTE: We'd love to be able to determine if we can continue execution right away
+//     : inside of await_ready, but there isn't enough information about the incoming
+//     : task's state at that point. The rest of the InitialAwaiter isn't important.
 struct InitialAwaiter
 {
     constexpr bool await_ready() const noexcept
     {
         return false; // Always suspend on initial creation
     }
+
     constexpr void await_suspend(std::coroutine_handle<>) const noexcept
     {
     }
+
     constexpr void await_resume() const noexcept
     {
     }
 };
 
+// Awaiter for the final suspension point of a Task.
+// It simply resumes the coroutine; the Scheduler is responsible for queuing it.
+struct FinalAwaiter
+{
+};
+
 // Type alias for the continuation function pointer. This is a highly efficient
 // replacement for std::function, avoiding type-erasure and heap allocations.
+// TODO: I hate this, I need to find a way not to do this
 using ContinuationFnPtr = std::coroutine_handle<> (*)(Scheduler*, std::coroutine_handle<>);
 
+// TODO: Combine Promise types into a single promise with if constexpr and std::conditional logic
+//     : to split the T/void logic. MSVC might not like return_value and return_void existing at the
+//     : same time, but technically they dont?
+
+//
 // Primary Promise template for non-void Tasks.
+//
 template <ThreadAffinity Affinity, typename T>
 struct Promise
 {
@@ -77,9 +114,12 @@ struct Promise
     static constexpr ThreadAffinity affinity = Affinity;
 
     Scheduler* scheduler_ = nullptr;
+
     // Store the handle to resume and a function pointer to the transfer logic.
-    std::coroutine_handle<> continuation_handle_ = nullptr;
-    ContinuationFnPtr continuation_fn_           = nullptr;
+    std::coroutine_handle<> continuationHandle_ = nullptr;
+
+    ContinuationFnPtr continuationFn_ = nullptr;
+
     T value_{};
 
     auto get_return_object() noexcept
@@ -100,7 +140,10 @@ struct Promise
         {
             Promise* promise_;
 
-            bool await_ready() const noexcept { return false; }
+            bool await_ready() const noexcept
+            {
+                return false;
+            }
 
             std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) noexcept
             {
@@ -116,7 +159,9 @@ struct Promise
                     return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
                 }
             }
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
         };
         return FinalTransitionAwaiter{ this };
     }
@@ -146,7 +191,7 @@ struct Promise
     {
         struct TransferAwaiter
         {
-            Scheduler* scheduler_;
+            Scheduler*                    scheduler_;
             TaskBase<NextAffinity, NextT> next_task_;
 
             bool await_ready() const noexcept
@@ -161,7 +206,8 @@ struct Promise
                 // This static lambda captures the compile-time affinity information in its type.
                 // It can be converted to a function pointer because it doesn't capture any state.
                 static constexpr auto resume_with_transfer =
-                    [](Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<> {
+                    [](Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
+                {
                     // On the "up" journey, transfer from the completed task's affinity (NextAffinity)
                     // back to the awaiting task's affinity (Affinity).
                     return TransferPolicy<NextAffinity, Affinity>::transfer(scheduler, handle);
@@ -192,7 +238,10 @@ struct Promise
     }
 };
 
+//
 // Promise specialization for void Tasks.
+//
+
 template <ThreadAffinity Affinity>
 struct Promise<Affinity, void>
 {
@@ -201,7 +250,7 @@ struct Promise<Affinity, void>
     Scheduler* scheduler_ = nullptr;
     // Store the handle to resume and a function pointer to the transfer logic.
     std::coroutine_handle<> continuation_handle_ = nullptr;
-    ContinuationFnPtr continuation_fn_           = nullptr;
+    ContinuationFnPtr       continuation_fn_     = nullptr;
 
     auto get_return_object() noexcept
     {
@@ -221,7 +270,10 @@ struct Promise<Affinity, void>
         {
             Promise* promise_;
 
-            bool await_ready() const noexcept { return false; }
+            bool await_ready() const noexcept
+            {
+                return false;
+            }
 
             std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) noexcept
             {
@@ -237,7 +289,9 @@ struct Promise<Affinity, void>
                     return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
                 }
             }
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
         };
         return FinalTransitionAwaiter{ this };
     }
@@ -256,7 +310,7 @@ struct Promise<Affinity, void>
     {
         struct TransferAwaiter
         {
-            Scheduler* scheduler_;
+            Scheduler*                    scheduler_;
             TaskBase<NextAffinity, NextT> next_task_;
 
             bool await_ready() const noexcept
@@ -269,7 +323,8 @@ struct Promise<Affinity, void>
                 auto& promise = next_task_.handle_.promise();
 
                 static constexpr auto resume_with_transfer =
-                    [](Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<> {
+                    [](Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
+                {
                     return TransferPolicy<NextAffinity, Affinity>::transfer(scheduler, handle);
                 };
 
@@ -297,22 +352,23 @@ struct Promise<Affinity, void>
     }
 };
 
-
 } // namespace detail
 
-
+//
 // Unified TaskBase for both void and non-void return types.
+//
+
 template <ThreadAffinity Affinity, typename T>
 struct TaskBase
 {
-    using ResultType   = T;
+    using ResultType                         = T;
     static constexpr ThreadAffinity affinity = Affinity;
-    using promise_type = detail::Promise<Affinity, T>;
+    using promise_type                       = detail::Promise<Affinity, T>;
 
     TaskBase() noexcept = default;
 
     explicit TaskBase(std::coroutine_handle<promise_type> coroutine) noexcept
-        : handle_(coroutine)
+    : handle_(coroutine)
     {
     }
 
@@ -320,7 +376,7 @@ struct TaskBase
     TaskBase& operator=(TaskBase const&) = delete;
 
     TaskBase(TaskBase&& other) noexcept
-        : handle_(other.handle_)
+    : handle_(other.handle_)
     {
         other.handle_ = nullptr;
     }
@@ -373,7 +429,8 @@ struct TaskBase
     {
         handle_.promise().continuation_handle_ = coroutine;
         // Fallback for generic awaitables - does not support cross-affinity returns.
-        handle_.promise().continuation_fn_ = [](Scheduler* /*s*/, std::coroutine_handle<> h) { return h; };
+        handle_.promise().continuation_fn_ = [](Scheduler* /*s*/, std::coroutine_handle<> h)
+        { return h; };
         return handle_;
     }
 
@@ -389,19 +446,20 @@ public:
     std::coroutine_handle<promise_type> handle_ = nullptr;
 };
 
+//
+// Task Aliases
+//
 
-//
-// Task - Simple alias for main thread execution
-//
 template <typename T = void>
 using Task = TaskBase<ThreadAffinity::Main, T>;
 
-// AsyncTask - Simple alias for worker thread execution
 template <typename T>
 using AsyncTask = TaskBase<ThreadAffinity::Worker, T>;
 
-
+//
 // Simple Scheduler stub for testing
+//
+
 class Scheduler
 {
 public:
@@ -486,7 +544,7 @@ private:
     auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
     {
         std::lock_guard<std::mutex> lock(mainThreadTasksMutex_);
-        std::coroutine_handle<> handle = std::noop_coroutine();
+        std::coroutine_handle<>     handle = std::noop_coroutine();
         if (!mainThreadTasks_.empty())
         {
             handle = mainThreadTasks_.front();
@@ -500,9 +558,9 @@ private:
         return std::noop_coroutine();
     }
 
-    std::thread::id mainThreadId_;
-    std::atomic<bool> running_{ true };
-    std::mutex mainThreadTasksMutex_;
+    std::thread::id                     mainThreadId_;
+    std::atomic<bool>                   running_{ true };
+    std::mutex                          mainThreadTasksMutex_;
     std::deque<std::coroutine_handle<>> mainThreadTasks_;
 };
 
@@ -546,6 +604,9 @@ int main()
 {
     Scheduler scheduler(4);
 
+    // BLOCKING: creating our Task coroutine produces this MSVC error:
+    // error C4737: Unable to perform required tail call. Performance may be degraded.
+    // Which is very poorly documented online...
     std::cout << "Scheduling outer task..." << std::endl;
     scheduler.schedule(outerTask());
 
@@ -556,311 +617,3 @@ int main()
     std::cout << "\nTest completed successfully!" << std::endl;
     return 0;
 }
-
-//
-// =======================================================================================
-// ALTERNATIVE IMPLEMENTATIONS - Avoiding Function Pointers
-// =======================================================================================
-//
-
-namespace alternatives {
-
-// ============================================================================
-// Alternative 1: std::variant with Explicit Continuation Types
-// ============================================================================
-// This approach avoids function pointers by storing the transfer logic
-// explicitly as a discriminated union of specific continuation types.
-
-enum class ContinuationType {
-    None,
-    SameAffinity,      // Main->Main or Worker->Worker
-    MainToWorker,      // Main->Worker
-    WorkerToMain       // Worker->Main
-};
-
-struct ContinuationData {
-    ContinuationType type = ContinuationType::None;
-    std::coroutine_handle<> continuation_handle = nullptr;
-};
-
-template <ThreadAffinity Affinity, typename T>
-struct Promise_Variant {
-    static constexpr ThreadAffinity affinity = Affinity;
-    static constexpr ThreadAffinity continuation_affinity = Affinity; // For final_suspend
-
-    Scheduler* scheduler_ = nullptr;
-    ContinuationData continuation_data_{};
-    T value_{};
-
-    auto get_return_object() noexcept {
-        return TaskBase<Affinity, T>{
-            std::coroutine_handle<Promise_Variant>::from_promise(*this)
-        };
-    }
-
-    auto initial_suspend() const noexcept {
-        return InitialAwaiter{};
-    }
-
-    auto final_suspend() noexcept {
-        struct FinalTransitionAwaiter {
-            Promise_Variant* promise_;
-
-            bool await_ready() const noexcept { return false; }
-
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) noexcept {
-                if (promise_->continuation_data_.type != ContinuationType::None) {
-                    auto& data = promise_->continuation_data_;
-                    std::coroutine_handle<> handle = data.continuation_handle;
-
-                    // Explicit dispatch based on continuation type
-                    switch (data.type) {
-                        case ContinuationType::SameAffinity:
-                            // Same affinity - direct transfer
-                            return handle;
-                        case ContinuationType::MainToWorker:
-                            // Transfer from Worker back to Main
-                            return promise_->scheduler_->scheduleHandleWithAffinity<ThreadAffinity::Main>(handle);
-                        case ContinuationType::WorkerToMain:
-                            // Transfer from Main back to Worker
-                            return promise_->scheduler_->scheduleHandleWithAffinity<ThreadAffinity::Worker>(handle);
-                        default:
-                            return std::noop_coroutine();
-                    }
-                } else {
-                    // Top-level task
-                    return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
-                }
-            }
-            void await_resume() const noexcept {}
-        };
-        return FinalTransitionAwaiter{ this };
-    }
-
-    template <typename U>
-    void return_value(U&& value) noexcept(std::is_nothrow_move_assignable_v<U>) {
-        value_ = std::forward<U>(value);
-    }
-
-    auto result() -> T& { return value_; }
-    auto result() const -> const T& { return value_; }
-
-    void unhandled_exception() noexcept { std::terminate(); }
-
-    template <ThreadAffinity NextAffinity, typename NextT>
-    auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept {
-        struct TransferAwaiter {
-            Scheduler* scheduler_;
-            TaskBase<NextAffinity, NextT> next_task_;
-            Promise_Variant* promise_; // Back-reference to store continuation
-
-            bool await_ready() const noexcept {
-                return next_task_.done();
-            }
-
-            auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<> {
-                auto& promise = next_task_.handle_.promise();
-
-                // Store continuation information explicitly
-                if constexpr (Affinity == NextAffinity) {
-                    promise_->continuation_data_ = {ContinuationType::SameAffinity, awaiting_coroutine};
-                } else if constexpr (Affinity == ThreadAffinity::Main && NextAffinity == ThreadAffinity::Worker) {
-                    promise_->continuation_data_ = {ContinuationType::MainToWorker, awaiting_coroutine};
-                } else if constexpr (Affinity == ThreadAffinity::Worker && NextAffinity == ThreadAffinity::Main) {
-                    promise_->continuation_data_ = {ContinuationType::WorkerToMain, awaiting_coroutine};
-                }
-
-                // Perform the "down" journey
-                return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, next_task_.handle_);
-            }
-
-            auto await_resume() {
-                if constexpr (!std::is_void_v<NextT>) {
-                    return next_task_.result();
-                }
-            }
-        };
-        return TransferAwaiter{ scheduler_, std::move(next_task_), this };
-    }
-
-    template <typename AwaitableType>
-    auto await_transform(AwaitableType&& awaitable) noexcept {
-        return std::forward<AwaitableType>(awaitable);
-    }
-};
-
-// ============================================================================
-// Alternative 2: CRTP-based Continuation with Type-Safe Dispatch
-// ============================================================================
-// This approach uses CRTP to provide compile-time polymorphism for continuations.
-
-template <typename Derived>
-struct ContinuationBase {
-    virtual ~ContinuationBase() = default;
-    virtual std::coroutine_handle<> execute(Scheduler* scheduler, std::coroutine_handle<> handle) = 0;
-};
-
-template <ThreadAffinity FromAffinity, ThreadAffinity ToAffinity>
-struct TypedContinuation : ContinuationBase<TypedContinuation<FromAffinity, ToAffinity>> {
-    std::coroutine_handle<> execute(Scheduler* scheduler, std::coroutine_handle<> handle) override {
-        return TransferPolicy<FromAffinity, ToAffinity>::transfer(scheduler, handle);
-    }
-};
-
-template <ThreadAffinity Affinity, typename T>
-struct Promise_CRTP {
-    static constexpr ThreadAffinity affinity = Affinity;
-
-    Scheduler* scheduler_ = nullptr;
-    std::unique_ptr<ContinuationBase<std::decay_t<decltype(*this)>>> continuation_;
-    std::coroutine_handle<> continuation_handle_ = nullptr;
-    T value_{};
-
-    auto get_return_object() noexcept {
-        return TaskBase<Affinity, T>{
-            std::coroutine_handle<Promise_CRTP>::from_promise(*this)
-        };
-    }
-
-    auto initial_suspend() const noexcept { return InitialAwaiter{}; }
-
-    auto final_suspend() noexcept {
-        struct FinalTransitionAwaiter {
-            Promise_CRTP* promise_;
-
-            bool await_ready() const noexcept { return false; }
-
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) noexcept {
-                if (promise_->continuation_) {
-                    return promise_->continuation_->execute(promise_->scheduler_, promise_->continuation_handle_);
-                } else {
-                    return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
-                }
-            }
-            void await_resume() const noexcept {}
-        };
-        return FinalTransitionAwaiter{ this };
-    }
-
-    template <typename U>
-    void return_value(U&& value) noexcept(std::is_nothrow_move_assignable_v<U>) {
-        value_ = std::forward<U>(value);
-    }
-
-    auto result() -> T& { return value_; }
-    void unhandled_exception() noexcept { std::terminate(); }
-
-    template <ThreadAffinity NextAffinity, typename NextT>
-    auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept {
-        struct TransferAwaiter {
-            Scheduler* scheduler_;
-            TaskBase<NextAffinity, NextT> next_task_;
-            Promise_CRTP* promise_;
-
-            bool await_ready() const noexcept { return next_task_.done(); }
-
-            auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<> {
-                auto& promise = next_task_.handle_.promise();
-
-                // Create typed continuation using CRTP
-                promise_->continuation_ = std::make_unique<TypedContinuation<NextAffinity, Affinity>>();
-                promise_->continuation_handle_ = awaiting_coroutine;
-
-                return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, next_task_.handle_);
-            }
-
-            auto await_resume() {
-                if constexpr (!std::is_void_v<NextT>) {
-                    return next_task_.result();
-                }
-            }
-        };
-        return TransferAwaiter{ scheduler_, std::move(next_task_), this };
-    }
-
-    template <typename AwaitableType>
-    auto await_transform(AwaitableType&& awaitable) noexcept {
-        return std::forward<AwaitableType>(awaitable);
-    }
-};
-
-// ============================================================================
-// Alternative 3: Template Specialization for Transfer Types
-// ============================================================================
-// This approach uses template specialization to create specific promise types
-// for each transfer scenario, eliminating runtime dispatch entirely.
-
-template <ThreadAffinity FromAffinity, ThreadAffinity ToAffinity, typename T>
-struct SpecializedPromise;
-
-template <typename T>
-struct SpecializedPromise<ThreadAffinity::Main, ThreadAffinity::Main, T> {
-    static constexpr ThreadAffinity affinity = ThreadAffinity::Main;
-    Scheduler* scheduler_ = nullptr;
-    std::coroutine_handle<> continuation_handle_ = nullptr;
-    T value_{};
-
-    // Main->Main transfers are always direct
-    static std::coroutine_handle<> transfer_back(Scheduler* /*scheduler*/, std::coroutine_handle<> handle) {
-        return handle; // Direct transfer for same affinity
-    }
-
-    // ... rest of implementation would mirror the pattern
-};
-
-template <typename T>
-struct SpecializedPromise<ThreadAffinity::Main, ThreadAffinity::Worker, T> {
-    static constexpr ThreadAffinity affinity = ThreadAffinity::Main;
-    Scheduler* scheduler_ = nullptr;
-    std::coroutine_handle<> continuation_handle_ = nullptr;
-    T value_{};
-
-    // Main->Worker transfers require scheduler involvement
-    static std::coroutine_handle<> transfer_back(Scheduler* scheduler, std::coroutine_handle<> handle) {
-        return scheduler->scheduleHandleWithAffinity<ThreadAffinity::Main>(handle);
-    }
-
-    // ... rest of implementation
-};
-
-} // namespace alternatives
-
-// ============================================================================
-// PERFORMANCE COMPARISON
-// ============================================================================
-
-/*
-Comparison of Function Pointer vs Alternatives:
-
-1. **Function Pointer Approach** (Current):
-   - ✅ Zero runtime overhead for dispatch
-   - ✅ Compile-time optimization
-   - ❌ Function pointer indirection
-   - ❌ No type safety at call site
-   - ❌ Requires lambda capture
-
-2. **std::variant Approach**:
-   - ✅ Type-safe explicit dispatch
-   - ✅ No function pointers
-   - ✅ Clear intent in code
-   - ❌ Switch statement overhead (minimal)
-   - ❌ More verbose
-
-3. **CRTP Approach**:
-   - ✅ Compile-time polymorphism
-   - ✅ Type-safe
-   - ✅ Extensible
-   - ❌ Heap allocation for continuation
-   - ❌ Virtual function call overhead
-
-4. **Template Specialization**:
-   - ✅ Zero runtime overhead
-   - ✅ Maximum type safety
-   - ✅ Compile-time everything
-   - ❌ Code duplication
-   - ❌ Maintenance burden
-
-Recommendation: If you want to avoid function pointers entirely, the std::variant
-approach provides the best balance of performance, safety, and maintainability.
-*/
-
