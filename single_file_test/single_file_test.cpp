@@ -3,18 +3,20 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <coroutine>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <thread>
 #include <type_traits>
 #include <variant>
 #include <vector>
 
-#include <concurrentqueue/concurrentqueue.h>
-
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+// #include <concurrentqueue/concurrentqueue.h>
+// #include <spdlog/sinks/stdout_color_sinks.h>
+// #include <spdlog/spdlog.h>
 
 //
 // https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
@@ -71,6 +73,125 @@
 #endif
 
 //
+// Logging
+//
+
+auto mainThreadString = std::this_thread::get_id();
+
+auto getThreadId() -> std::string
+{
+    std::stringstream ss;
+    ss << std::this_thread::get_id();
+    return ss.str();
+}
+
+void log(const std::string& message)
+{
+    if (std::this_thread::get_id() == mainThreadString)
+    {
+        std::cout << "[Main Thread] " << message << std::endl;
+    }
+    else
+    {
+        std::cout << "[Worker Thread] " << message << std::endl;
+    }
+}
+
+//
+// Safe Single-Producer Single-Consumer Queue
+// Godbolt replacement for moodycamel::ConcurrentQueue
+//
+
+template <typename T>
+class SafeSPSCQueue
+{
+public:
+    explicit SafeSPSCQueue(size_t capacity = 1024)
+    : capacity_(capacity)
+    , buffer_(new T[capacity])
+    , readPos_(0)
+    , writePos_(0)
+    , size_(0)
+    {
+    }
+
+    ~SafeSPSCQueue()
+    {
+        // Clean up any remaining items
+        while (size_.load(std::memory_order_acquire) > 0)
+        {
+            buffer_[readPos_].~T();
+            readPos_ = (readPos_ + 1) % capacity_;
+            size_.fetch_sub(1, std::memory_order_relaxed);
+        }
+        delete[] buffer_;
+    }
+
+    // Copy and move operations
+    SafeSPSCQueue(const SafeSPSCQueue&)            = delete;
+    SafeSPSCQueue& operator=(const SafeSPSCQueue&) = delete;
+    SafeSPSCQueue(SafeSPSCQueue&&)                 = delete;
+    SafeSPSCQueue& operator=(SafeSPSCQueue&&)      = delete;
+
+    // Producer methods (single producer)
+    template <typename... Args>
+    bool try_emplace(Args&&... args) noexcept
+    {
+        size_t currentSize = size_.load(std::memory_order_acquire);
+        if (currentSize >= capacity_)
+        {
+            return false; // Queue full
+        }
+
+        // Construct the item in place
+        new (&buffer_[writePos_]) T(std::forward<Args>(args)...);
+        writePos_ = (writePos_ + 1) % capacity_;
+        size_.fetch_add(1, std::memory_order_release);
+        return true;
+    }
+
+    // Consumer methods (single consumer)
+    bool try_dequeue(T& item) noexcept
+    {
+        size_t currentSize = size_.load(std::memory_order_acquire);
+        if (currentSize == 0)
+        {
+            return false; // Queue empty
+        }
+
+        // Move the item out
+        item = std::move(buffer_[readPos_]);
+        buffer_[readPos_].~T();
+        readPos_ = (readPos_ + 1) % capacity_;
+        size_.fetch_sub(1, std::memory_order_release);
+        return true;
+    }
+
+    // Utility methods
+    size_t size() const noexcept
+    {
+        return size_.load(std::memory_order_acquire);
+    }
+
+    bool empty() const noexcept
+    {
+        return size_.load(std::memory_order_acquire) == 0;
+    }
+
+    size_t capacity() const noexcept
+    {
+        return capacity_;
+    }
+
+private:
+    const size_t        capacity_;
+    T*                  buffer_;
+    size_t              readPos_;
+    size_t              writePos_;
+    std::atomic<size_t> size_;
+};
+
+//
 // Enums
 //
 
@@ -112,7 +233,7 @@ struct Continuation;
 #pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
 #endif
 
-class Scheduler
+class Scheduler final
 {
 public:
     explicit Scheduler(size_t workerThreadCount = 4)
@@ -266,7 +387,7 @@ private:
                     lock,
                     [this]
                     {
-                        return !running_.load() || workerThreadTasks_.size_approx() > 0;
+                        return !running_.load() || !workerThreadTasks_.empty();
                     });
             }
         }
@@ -274,12 +395,12 @@ private:
 
     FORCE_INLINE void scheduleMainThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        mainThreadTasks_.enqueue(handle);
+        mainThreadTasks_.try_emplace(handle);
     }
 
     void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        workerThreadTasks_.enqueue(handle);
+        workerThreadTasks_.try_emplace(handle);
         workerCondition_.notify_one();
     }
 
@@ -303,10 +424,8 @@ private:
         return std::noop_coroutine();
     }
 
-    // TODO: Technically mainThreadTasks_ only requires SPSC, so there might
-    //     : be an optimisation to be had here!
-    moodycamel::ConcurrentQueue<std::coroutine_handle<>> mainThreadTasks_;
-    moodycamel::ConcurrentQueue<std::coroutine_handle<>> workerThreadTasks_;
+    SafeSPSCQueue<std::coroutine_handle<>> mainThreadTasks_;
+    SafeSPSCQueue<std::coroutine_handle<>> workerThreadTasks_;
 
     std::vector<std::thread> workerThreads_;
     std::mutex               workerMutex_;
@@ -478,6 +597,27 @@ struct [[nodiscard]] TaskBase
     [[nodiscard]] auto result() const noexcept -> std::enable_if_t<!std::is_void_v<U>, const U&>
     {
         return handle_.promise().result();
+    }
+
+    auto await_ready() const noexcept -> bool
+    {
+        return done();
+    }
+
+    // This is a fallback for awaiting a raw TaskBase. The `await_transform` in the Promise
+    // is the primary, more powerful mechanism for handling `co_await`.
+    COLD_PATH auto await_suspend(std::coroutine_handle<> coroutine) const noexcept -> std::coroutine_handle<>
+    {
+        handle_.promise().continuation_ = detail::Continuation<Affinity, Affinity>{ coroutine };
+        return handle_;
+    }
+
+    auto await_resume() const noexcept
+    {
+        if constexpr (!std::is_void_v<T>)
+        {
+            return result();
+        }
     }
 
 public:
@@ -809,10 +949,10 @@ auto outermostTask(size_t numSubTasks) -> Task<int>
 
 auto main() -> int
 {
-    auto console = spdlog::stdout_color_mt("console");
-    spdlog::set_default_logger(console);
-    spdlog::set_pattern("[%H:%M:%S][t:%t] %v");
-    spdlog::flush_on(spdlog::level::err);
+    // auto console = spdlog::stdout_color_mt("console");
+    // spdlog::set_default_logger(console);
+    // spdlog::set_pattern("[%H:%M:%S][t:%t] %v");
+    // spdlog::flush_on(spdlog::level::err);
 
     {
         const auto numThreads  = 16;
@@ -821,31 +961,31 @@ auto main() -> int
 
         Scheduler scheduler(numThreads);
 
-        spdlog::info("Scheduling outer tasks...");
+        log("Scheduling outer tasks...");
         for (int i = 0; i < numTasks; ++i)
         {
             scheduler.schedule(outermostTask(numSubTasks));
         }
 
-        spdlog::info("Running tasks...");
+        log("Running tasks...");
         try
         {
             auto duration = scheduler.runExpiredTasks();
-            spdlog::info("-> Scheduler ran for {}ms", duration.count());
+            log("-> Scheduler ran for " + std::to_string(duration.count()) + "ms");
         }
         catch (const std::exception& e)
         {
-            spdlog::error("Error occurred while running tasks: {}", e.what());
+            log("Error occurred while running tasks: " + std::string(e.what()));
             return 1;
         }
 
-        spdlog::info("Number of threads: {}", numThreads);
-        spdlog::info("Total tasks scheduled: {}", numTasks);
-        spdlog::info("Total main thread coroutines executed: {}", mainThreadTaskCounter.load());
-        spdlog::info("Total worker coroutines executed: {}", workerTaskCounter.load());
-        spdlog::info("Total tasks finished: {}", totalTasksFinishedCounter.load());
+        log("Number of threads: " + std::to_string(numThreads));
+        log("Total tasks scheduled: " + std::to_string(numTasks));
+        log("Total main thread coroutines executed: " + std::to_string(mainThreadTaskCounter.load()));
+        log("Total worker coroutines executed: " + std::to_string(workerTaskCounter.load()));
+        log("Total tasks finished: " + std::to_string(totalTasksFinishedCounter.load()));
     }
 
-    spdlog::info("Test completed successfully!");
+    log("Test completed successfully!");
     return 0;
 }

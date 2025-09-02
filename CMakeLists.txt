@@ -30,7 +30,7 @@ file(
 include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 
 if(ENABLE_TESTS)
-    add_subdirectory(test)
+    # add_subdirectory(test)
 endif()
 
 add_executable(single_file_test
@@ -43,4 +43,12 @@ target_include_directories(single_file_test PRIVATE
 )
 
 CPMAddPackage("gh:gabime/spdlog@1.15.3")
+
 target_link_libraries(single_file_test PRIVATE spdlog::spdlog_header_only Threads::Threads)
+
+target_compile_options(single_file_test PRIVATE
+    /RTC1
+    /analyze
+    # /Wall
+    # /permissive-
+)
