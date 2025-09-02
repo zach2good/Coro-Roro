@@ -10,26 +10,27 @@ find_package(Threads REQUIRED)
 add_library(Coro-Roro INTERFACE)
 
 target_include_directories(Coro-Roro INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/ext/include>
+    $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(Coro-Roro INTERFACE Threads::Threads)
+add_library(concurrentqueue INTERFACE)
+target_include_directories(concurrentqueue SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/ext/include)
 
-# The Coro-Roro library is now fully header-only
+target_link_libraries(Coro-Roro INTERFACE Threads::Threads concurrentqueue)
 
 option(ENABLE_TESTS "Build test executable" ON)
 
-# Get CPM.cmake
-file(
-  DOWNLOAD
-  https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.40.8/CPM.cmake
-  ${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake
-  EXPECTED_HASH SHA256=78ba32abdf798bc616bab7c73aac32a17bbd7b06ad9e26a6add69de8f3ae4791
-)
-include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
-
 if(ENABLE_TESTS)
+    # Get CPM.cmake
+    file(
+      DOWNLOAD
+      https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.40.8/CPM.cmake
+      ${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake
+      EXPECTED_HASH SHA256=78ba32abdf798bc616bab7c73aac32a17bbd7b06ad9e26a6add69de8f3ae4791
+    )
+    include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
     # add_subdirectory(test)
 endif()
 
@@ -37,15 +38,7 @@ add_executable(single_file_test
     single_file_test/single_file_test.cpp
 )
 
-target_include_directories(single_file_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-add_library(concurrentqueue INTERFACE)
-target_include_directories(concurrentqueue SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/ext/include)
-
-target_link_libraries(single_file_test PRIVATE Threads::Threads concurrentqueue)
-
+target_link_libraries(single_file_test PRIVATE Coro-Roro)
 if(MSVC)
     target_compile_options(single_file_test PRIVATE
         # /RTC1
@@ -57,7 +50,6 @@ if(MSVC)
         # /Wall # Please kill me :(
         # /wd4820 # 'padding' added to the end of the struct
         # /wd4710 # function not inlined
-
     )
 else()
     target_compile_options(single_file_test PRIVATE
