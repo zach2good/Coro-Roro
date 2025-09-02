@@ -502,6 +502,11 @@ struct PromiseBase
     template <ThreadAffinity NextAffinity, typename NextT>
     HOT_PATH auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept
     {
+        // Before we can co_await the next task, we must propagate the scheduler pointer.
+        // This ensures that when the next task completes, its `final_suspend` can correctly
+        // interact with the scheduler to resume the continuation or fetch a new task.
+        next_task.handle_.promise().scheduler_ = scheduler_;
+
         struct TransferAwaiter
         {
             Scheduler*                    scheduler_;
@@ -532,7 +537,7 @@ struct PromiseBase
                 }
             }
         };
-        return TransferAwaiter{ static_cast<Derived*>(this)->scheduler_, std::move(next_task) };
+        return TransferAwaiter{ scheduler_, std::move(next_task) };
     }
 
     template <typename AwaitableType>
