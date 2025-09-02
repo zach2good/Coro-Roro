@@ -795,12 +795,16 @@ auto outerTask() -> Task<void>
 }
 
 // The top-level task that starts the entire chain.
-auto outermostTask() -> Task<int>
+auto outermostTask(size_t numSubTasks) -> Task<int>
 {
     co_await outerTask();
-    auto result = co_await innerTask();
+    int value = 0;
+    for (size_t i = 0; i < numSubTasks; ++i)
+    {
+        value = co_await innerTask();
+    }
     ++totalTasksFinishedCounter;
-    co_return result;
+    co_return value;
 }
 
 auto main() -> int
@@ -808,28 +812,38 @@ auto main() -> int
     auto console = spdlog::stdout_color_mt("console");
     spdlog::set_default_logger(console);
     spdlog::set_pattern("[%H:%M:%S][t:%t] %v");
+    spdlog::flush_on(spdlog::level::err);
 
     {
-        const auto numThreads = 32;
-        const auto numTasks   = 10'000;
+        const auto numThreads  = 16;
+        const auto numTasks    = 100; // 100 zones
+        const auto numSubTasks = 300; // 300 entities per zone
 
         Scheduler scheduler(numThreads);
 
         spdlog::info("Scheduling outer tasks...");
         for (int i = 0; i < numTasks; ++i)
         {
-            scheduler.schedule(outermostTask());
+            scheduler.schedule(outermostTask(numSubTasks));
         }
 
         spdlog::info("Running tasks...");
-        auto duration = scheduler.runExpiredTasks();
+        try
+        {
+            auto duration = scheduler.runExpiredTasks();
+            spdlog::info("-> Scheduler ran for {}ms", duration.count());
+        }
+        catch (const std::exception& e)
+        {
+            spdlog::error("Error occurred while running tasks: {}", e.what());
+            return 1;
+        }
 
         spdlog::info("Number of threads: {}", numThreads);
         spdlog::info("Total tasks scheduled: {}", numTasks);
         spdlog::info("Total main thread coroutines executed: {}", mainThreadTaskCounter.load());
         spdlog::info("Total worker coroutines executed: {}", workerTaskCounter.load());
         spdlog::info("Total tasks finished: {}", totalTasksFinishedCounter.load());
-        spdlog::info("-> Scheduler ran for {}ms", duration.count());
     }
 
     spdlog::info("Test completed successfully!");
