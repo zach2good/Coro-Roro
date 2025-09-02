@@ -99,6 +99,14 @@ struct Continuation;
 // Simple, allocation-free, single-producer, single-consumer lock-free queue.
 //
 
+#if defined(_MSC_VER)
+// MSVC-specific pragmas to suppress warnings about padding, which is intentional
+// for performance-critical, cache-aligned structures.
+#pragma warning(push)
+#pragma warning(disable : 4324) // C4324: structure was padded due to alignment specifier
+#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
+#endif
+
 template <typename T, size_t Capacity>
 class SPSCQueue
 {
@@ -136,14 +144,28 @@ public:
     }
 
 private:
-    T ring_[Capacity];
+    // The head and tail pointers are aligned to cache lines to prevent false sharing
+    // between the producer and consumer threads, which is critical for performance
+    // in a multi-threaded context (even if this test is single-threaded).
     alignas(64) std::atomic<size_t> head_{ 0 };
     alignas(64) std::atomic<size_t> tail_{ 0 };
+    T ring_[Capacity];
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 //
 // Simple Scheduler stub for testing (will eventually use)
 //
+
+#if defined(_MSC_VER)
+// Suppress warnings about padding, which is intentional. By reordering members
+// from largest to smallest, we minimize padding, but some may still exist.
+#pragma warning(push)
+#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
+#endif
 
 class Scheduler
 {
@@ -253,10 +275,15 @@ private:
         return std::noop_coroutine();
     }
 
-    std::thread::id                         mainThreadId_;
-    std::atomic<bool>                       running_{ true };
-    SPSCQueue<std::coroutine_handle<>, 256> mainThreadTasks_;
+    // Place members with alignment requirements first to minimize padding.
+    SPSCQueue<std::coroutine_handle<>, 64> mainThreadTasks_;
+    std::thread::id                        mainThreadId_;
+    std::atomic<bool>                      running_{ true };
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 namespace detail
 {
@@ -321,7 +348,7 @@ template <ThreadAffinity From, ThreadAffinity To>
 struct Continuation
 {
     std::coroutine_handle<>         handle_;
-    [[nodiscard]] FORCE_INLINE auto resume(Scheduler* scheduler) noexcept -> std::coroutine_handle<>
+    [[nodiscard]] FORCE_INLINE auto resume(Scheduler* scheduler) const noexcept -> std::coroutine_handle<>
     {
         // We can now invoke the correct `TransferPolicy` because we have both `From` and `To`.
         return TransferPolicy<From, To>::transfer(scheduler, handle_);
@@ -429,13 +456,13 @@ struct [[nodiscard]] TaskBase
 
     // This is a fallback for awaiting a raw TaskBase. The `await_transform` in the Promise
     // is the primary, more powerful mechanism for handling `co_await`.
-    COLD_PATH auto await_suspend(std::coroutine_handle<> coroutine) noexcept -> std::coroutine_handle<>
+    COLD_PATH auto await_suspend(std::coroutine_handle<> coroutine) const noexcept -> std::coroutine_handle<>
     {
         handle_.promise().continuation_ = detail::Continuation<Affinity, Affinity>{ coroutine };
         return handle_;
     }
 
-    auto await_resume() noexcept
+    auto await_resume() const noexcept
     {
         if constexpr (!std::is_void_v<T>)
         {
@@ -486,7 +513,7 @@ struct FinalAwaiter
         return false;
     }
 
-    [[nodiscard]] HOT_PATH std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) noexcept
+    [[nodiscard]] HOT_PATH std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) const noexcept
     {
         return std::visit(
             [&](auto&& cont) noexcept -> std::coroutine_handle<>
@@ -522,12 +549,21 @@ struct FinalAwaiter
 // suspension, exception handling, and the `await_transform` customization point.
 //
 
+#if defined(_MSC_VER)
+// Suppress warnings about padding, which is intentional. By reordering members
+// from largest to smallest, we minimize padding, but some may still exist.
+#pragma warning(push)
+#pragma warning(disable : 4324) // C4324: structure was padded due to alignment specifier
+#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
+#endif
+
 template <typename Derived, ThreadAffinity Affinity, typename T>
 struct alignas(64) PromiseBase
 {
-    static constexpr ThreadAffinity affinity = Affinity;
+    // Place members in descending order of alignment/size to minimize padding.
     Scheduler*                      scheduler_{ nullptr };
     ContinuationVariant             continuation_{};
+    static constexpr ThreadAffinity affinity = Affinity;
 
     [[nodiscard]] FORCE_INLINE auto get_return_object() noexcept
     {
@@ -559,44 +595,59 @@ struct alignas(64) PromiseBase
     // 2. Uses `TransferPolicy` to immediately transfer execution to `next_task` or a new task.
     //
     template <ThreadAffinity NextAffinity, typename NextT>
-    HOT_PATH auto await_transform(TaskBase<NextAffinity, NextT>&& next_task) noexcept
+    HOT_PATH auto await_transform(TaskBase<NextAffinity, NextT>&& nextTask) noexcept
     {
         // Before we can co_await the next task, we must propagate the scheduler pointer.
         // This ensures that when the next task completes, its `final_suspend` can correctly
         // interact with the scheduler to resume the continuation or fetch a new task.
-        next_task.handle_.promise().scheduler_ = scheduler_;
+        nextTask.handle_.promise().scheduler_ = scheduler_;
 
         struct TransferAwaiter
         {
             Scheduler*                    scheduler_;
-            TaskBase<NextAffinity, NextT> next_task_;
+            TaskBase<NextAffinity, NextT> nextTask_;
+
+            // Explicit constructor to handle initialization from the enclosing function.
+            TransferAwaiter(Scheduler* scheduler, TaskBase<NextAffinity, NextT>&& task) noexcept
+            : scheduler_(scheduler)
+            , nextTask_(std::move(task))
+            {
+            }
+
+            // This awaiter is move-only, as it contains a move-only TaskBase.
+            // Explicitly deleting copy operations silences MSVC warning C4625.
+            // Defaulting move operations silences MSVC warning C4626.
+            TransferAwaiter(const TransferAwaiter&)            = delete;
+            TransferAwaiter& operator=(const TransferAwaiter&) = delete;
+            TransferAwaiter(TransferAwaiter&&)                 = default;
+            TransferAwaiter& operator=(TransferAwaiter&&)      = default;
 
             FORCE_INLINE bool await_ready() const noexcept
             {
-                return next_task_.done();
+                return nextTask_.done();
             }
 
-            [[nodiscard]] HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+            [[nodiscard]] HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) const noexcept -> std::coroutine_handle<>
             {
                 // Store this coroutine's handle as the continuation for the next task,
                 // preserving the parent's affinity information for the eventual resume.
-                next_task_.handle_.promise().continuation_ = detail::Continuation<NextAffinity, Affinity>{ awaiting_coroutine };
+                nextTask_.handle_.promise().continuation_ = detail::Continuation<NextAffinity, Affinity>{ awaiting_coroutine };
 
                 // Perform the "downward" transfer to start executing next_task. `TransferPolicy`
                 // will either return `next_task_.handle_` directly (same affinity) or schedule
                 // it and return a new task for this thread (different affinity).
-                return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, next_task_.handle_);
+                return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, nextTask_.handle_);
             }
 
-            FORCE_INLINE auto await_resume() noexcept
+            FORCE_INLINE auto await_resume() const noexcept
             {
                 if constexpr (!std::is_void_v<NextT>)
                 {
-                    return next_task_.result();
+                    return nextTask_.result();
                 }
             }
         };
-        return TransferAwaiter{ scheduler_, std::move(next_task) };
+        return TransferAwaiter{ scheduler_, std::move(nextTask) };
     }
 
     template <typename AwaitableType>
@@ -605,6 +656,10 @@ struct alignas(64) PromiseBase
         return std::forward<AwaitableType>(awaitable);
     }
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 //
 // Promise <T>
