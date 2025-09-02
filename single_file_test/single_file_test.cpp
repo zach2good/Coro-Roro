@@ -145,6 +145,11 @@ public:
         return true;
     }
 
+    bool empty() const
+    {
+        return head_.load(std::memory_order_acquire) == tail_.load(std::memory_order_acquire);
+    }
+
 private:
     // The head and tail pointers are aligned to cache lines to prevent false sharing
     // between the producer and consumer threads, which is critical for performance
@@ -212,12 +217,26 @@ public:
     {
         auto start = std::chrono::steady_clock::now();
 
-        auto task_to_run = getNextMainThreadTask();
-        if (task_to_run && !task_to_run.done())
-            LIKELY
+        // Keep running until both queues are empty.
+        // NOTE: This is a temporary loop for single-threaded testing.
+        while (!mainThreadTasks_.empty() || !workerThreadTasks_.empty())
+        {
+            // Check and run a main thread task if available.
+            if (auto task = getNextMainThreadTask(); task && !task.done())
             {
-                task_to_run.resume();
+                task.resume();
             }
+
+            // Independently check and run a worker thread task if available.
+            if (auto task = getNextWorkerThreadTask(); task && !task.done())
+            {
+                task.resume();
+            }
+
+            // In a real scheduler, this would be a condition variable wait.
+            // For this test, a small sleep prevents a 100% CPU busy-wait.
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -262,7 +281,12 @@ private:
 
     void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        std::ignore = handle;
+        while (!workerThreadTasks_.push(std::move(handle)))
+        {
+            // Queue is full, this is a busy-wait which is not ideal for a real-world
+            // scenario, but acceptable for this benchmark-oriented test file.
+            // A real implementation would use a condition variable or other mechanism.
+        }
     }
 
     FORCE_INLINE auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
@@ -277,13 +301,20 @@ private:
 
     auto getNextWorkerThreadTask() noexcept -> std::coroutine_handle<>
     {
+        std::coroutine_handle<> handle = nullptr;
+        if (workerThreadTasks_.pop(handle))
+        {
+            return handle;
+        }
         return std::noop_coroutine();
     }
 
     // Place members with alignment requirements first to minimize padding.
     SPSCQueue<std::coroutine_handle<>, 64> mainThreadTasks_;
-    std::thread::id                        mainThreadId_;
-    std::atomic<bool>                      running_{ true };
+    SPSCQueue<std::coroutine_handle<>, 64> workerThreadTasks_;
+
+    std::thread::id   mainThreadId_;
+    std::atomic<bool> running_{ true };
 };
 
 #if defined(_MSC_VER)
@@ -732,6 +763,7 @@ using AsyncTask = detail::TaskBase<ThreadAffinity::Worker, T>;
 // This task runs on a worker thread and returns an integer.
 auto innermostTask() -> AsyncTask<int>
 {
+    std::cout << "Running innermostTask on worker thread." << std::endl;
     co_return 100;
 }
 
@@ -743,6 +775,7 @@ auto innerTask() -> Task<int>
     // thread would ask for a new main-thread task to run.
     // When innermostTask completes, its FinalAwaiter will resume this coroutine. Because the
     // affinities differ again (Worker -> Main), it's another symmetric transfer.
+    std::cout << "Running innerTask on main thread." << std::endl;
     co_return co_await innermostTask();
 }
 
@@ -752,6 +785,7 @@ auto middleTask() -> Task<void>
     // co_await triggers await_transform. Because the affinities match (Main -> Main),
     // this is a "fast path" direct transfer. Execution jumps into innerTask immediately
     // without involving the scheduler.
+    std::cout << "Running middleTask on main thread." << std::endl;
     co_await innerTask();
     co_return;
 }
@@ -759,6 +793,7 @@ auto middleTask() -> Task<void>
 // Another chaining task.
 auto outerTask() -> Task<void>
 {
+    std::cout << "Running outerTask on main thread." << std::endl;
     co_await middleTask();
     co_return;
 }
@@ -766,6 +801,7 @@ auto outerTask() -> Task<void>
 // The top-level task that starts the entire chain.
 auto outermostTask() -> Task<int>
 {
+    std::cout << "Running outermostTask on main thread." << std::endl;
     co_await outerTask();
     co_return co_await innerTask();
 }
