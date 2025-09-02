@@ -134,6 +134,7 @@ public:
     {
         // Signal all threads to stop
         running_.store(false);
+        workerCondition_.notify_all();
 
         // Join all threads
         for (auto& thread : workerThreads_)
@@ -194,7 +195,7 @@ public:
                 }
                 else
                 {
-                    // If both queues are empty, yield to be a bit more friendly.
+                    // If both queues are empty, yield.
                     std::this_thread::yield();
                 }
             }
@@ -202,6 +203,7 @@ public:
 
         // Signal workers to stop and wait for them to finish.
         running_.store(false);
+        workerCondition_.notify_all();
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -241,25 +243,35 @@ private:
         {
             std::coroutine_handle<> task = nullptr;
 
-            // First, try to get a task.
-            if (workerThreadTasks_.try_dequeue(task) && task)
+            // Try to get a task. If the queue is empty, enter a brief spin-wait.
+            if (!workerThreadTasks_.try_dequeue(task))
             {
-                task.resume();
-                // After finishing a task, continue the loop to check for more work immediately.
-                continue;
+                const auto spinUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+                while (std::chrono::steady_clock::now() < spinUntil)
+                {
+                    if (workerThreadTasks_.try_dequeue(task))
+                    {
+                        break;
+                    }
+                    std::this_thread::yield();
+                }
             }
 
-            // If no task was found, enter a spin-wait phase.
-            auto spin_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
-            while (std::chrono::steady_clock::now() < spin_until)
+            // If a task was found (either on the first try or during the spin-wait), resume it.
+            if (task)
             {
-                if (workerThreadTasks_.try_dequeue(task) && task)
-                {
-                    task.resume();
-                    break;
-                }
-                // Yield the processor to other threads.
-                std::this_thread::yield();
+                task.resume();
+            }
+            else
+            {
+                // If no task was found, go to sleep and wait for a notification.
+                std::unique_lock<std::mutex> lock(workerMutex_);
+                workerCondition_.wait(
+                    lock,
+                    [this]
+                    {
+                        return !running_.load() || workerThreadTasks_.size_approx() > 0;
+                    });
             }
         }
     }
@@ -272,6 +284,7 @@ private:
     void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept
     {
         workerThreadTasks_.enqueue(handle);
+        workerCondition_.notify_one();
     }
 
     FORCE_INLINE auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
@@ -300,6 +313,8 @@ private:
     moodycamel::ConcurrentQueue<std::coroutine_handle<>> workerThreadTasks_;
 
     std::vector<std::thread> workerThreads_;
+    std::mutex               workerMutex_;
+    std::condition_variable  workerCondition_;
 
     std::atomic<bool>   running_{ true };
     std::atomic<size_t> inFlightTasks_{ 0 };
@@ -819,7 +834,7 @@ auto main() -> int
 
         Scheduler scheduler(numThreads);
 
-        spdlog::info("Scheduling outer task...");
+        spdlog::info("Scheduling outer tasks...");
         for (int i = 0; i < numTasks; ++i)
         {
             scheduler.schedule(outermostTask());
@@ -827,13 +842,13 @@ auto main() -> int
 
         spdlog::info("Running tasks...");
         auto duration = scheduler.runExpiredTasks();
-        spdlog::info("Scheduler ran for {}ms.", duration.count());
 
         spdlog::info("Number of threads: {}", numThreads);
         spdlog::info("Total tasks scheduled: {}", numTasks);
         spdlog::info("Total main thread coroutines executed: {}", mainThreadTaskCounter.load());
         spdlog::info("Total worker coroutines executed: {}", workerTaskCounter.load());
         spdlog::info("Total tasks finished: {}", totalTasksFinishedCounter.load());
+        spdlog::info("-> Scheduler ran for {}ms.", duration.count());
     }
 
     spdlog::info("Test completed successfully!");
