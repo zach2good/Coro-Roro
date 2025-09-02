@@ -201,10 +201,6 @@ public:
             }
         }
 
-        // Signal workers to stop and wait for them to finish.
-        running_.store(false);
-        workerCondition_.notify_all();
-
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
     }
@@ -830,7 +826,7 @@ auto main() -> int
 
     {
         const auto numThreads = 32;
-        const auto numTasks   = 100;
+        const auto numTasks   = 10'000;
 
         Scheduler scheduler(numThreads);
 
@@ -848,7 +844,7 @@ auto main() -> int
         spdlog::info("Total main thread coroutines executed: {}", mainThreadTaskCounter.load());
         spdlog::info("Total worker coroutines executed: {}", workerTaskCounter.load());
         spdlog::info("Total tasks finished: {}", totalTasksFinishedCounter.load());
-        spdlog::info("-> Scheduler ran for {}ms.", duration.count());
+        spdlog::info("-> Scheduler ran for {}ms", duration.count());
     }
 
     spdlog::info("Test completed successfully!");
