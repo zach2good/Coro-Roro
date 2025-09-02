@@ -9,6 +9,12 @@
 #include <thread>
 #include <type_traits>
 #include <variant>
+#include <vector>
+
+#include <concurrentqueue/concurrentqueue.h>
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 //
 // https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
@@ -96,74 +102,6 @@ struct Continuation;
 } // namespace detail
 
 //
-// Simple, allocation-free, single-producer, single-consumer lock-free queue.
-//
-
-#if defined(_MSC_VER)
-// MSVC-specific pragmas to suppress warnings about padding, which is intentional
-// for performance-critical, cache-aligned structures.
-#pragma warning(push)
-#pragma warning(disable : 4324) // C4324: structure was padded due to alignment specifier
-#pragma warning(disable : 4820) // C4820: 'bytes' bytes padding added after data member 'member'
-#endif
-
-template <typename T, size_t Capacity>
-class SPSCQueue
-{
-public:
-    SPSCQueue() = default;
-
-    SPSCQueue(const SPSCQueue&)            = delete;
-    SPSCQueue& operator=(const SPSCQueue&) = delete;
-
-    // Pushed by the producer thread.
-    // Returns false if the queue is full.
-    [[nodiscard]] bool push(T&& value)
-    {
-        size_t head      = head_.load(std::memory_order_relaxed);
-        size_t next_head = (head + 1) % Capacity;
-        if (next_head == tail_.load(std::memory_order_acquire))
-        {
-            return false; // Full
-        }
-        ring_[head] = std::move(value);
-        head_.store(next_head, std::memory_order_release);
-        return true;
-    }
-
-    // Popped by the consumer thread.
-    // Returns false if the queue is empty.
-    [[nodiscard]] bool pop(T& value)
-    {
-        size_t tail = tail_.load(std::memory_order_relaxed);
-        if (tail == head_.load(std::memory_order_acquire))
-        {
-            return false; // Empty
-        }
-        value = std::move(ring_[tail]);
-        tail_.store((tail + 1) % Capacity, std::memory_order_release);
-        return true;
-    }
-
-    bool empty() const
-    {
-        return head_.load(std::memory_order_acquire) == tail_.load(std::memory_order_acquire);
-    }
-
-private:
-    // The head and tail pointers are aligned to cache lines to prevent false sharing
-    // between the producer and consumer threads, which is critical for performance
-    // in a multi-threaded context (even if this test is single-threaded).
-    alignas(64) std::atomic<size_t> head_{ 0 };
-    alignas(64) std::atomic<size_t> tail_{ 0 };
-    T ring_[Capacity];
-};
-
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-
-//
 // Simple Scheduler stub for testing (will eventually use)
 //
 
@@ -182,18 +120,41 @@ public:
         mainThreadId_ = std::this_thread::get_id();
         running_.store(true);
 
-        std::ignore = workerThreadCount;
+        workerThreads_.reserve(workerThreadCount);
+        for (size_t i = 0; i < workerThreadCount; ++i)
+        {
+            workerThreads_.emplace_back(
+                [this]
+                {
+                    workerLoop();
+                });
+        }
     }
 
     ~Scheduler()
     {
+        // Signal all threads to stop
         running_.store(false);
+
+        // Join all threads
+        for (auto& thread : workerThreads_)
+        {
+            if (thread.joinable())
+            {
+                thread.join();
+            }
+        }
     }
 
     Scheduler(const Scheduler&)            = delete;
     Scheduler& operator=(const Scheduler&) = delete;
     Scheduler(Scheduler&&)                 = delete;
     Scheduler& operator=(Scheduler&&)      = delete;
+
+    void notifyTaskComplete()
+    {
+        inFlightTasks_.fetch_sub(1, std::memory_order_relaxed);
+    }
 
     // Takes a temporary Task object (an r-value) and assumes ownership of its
     // coroutine handle. This is a "sink" function.
@@ -204,6 +165,7 @@ public:
         if (handle && !handle.done())
             LIKELY
             {
+                inFlightTasks_.fetch_add(1, std::memory_order_relaxed);
                 handle.promise().scheduler_ = this;
                 // The coroutine's lifetime is now managed by the scheduler. We must
                 // release the handle from the task object that was passed in to
@@ -217,26 +179,31 @@ public:
     {
         auto start = std::chrono::steady_clock::now();
 
-        // Keep running until both queues are empty.
-        // NOTE: This is a temporary loop for single-threaded testing.
-        while (!mainThreadTasks_.empty() || !workerThreadTasks_.empty())
+        // Main thread assists in running tasks until all scheduled tasks are complete.
+        while (inFlightTasks_.load(std::memory_order_acquire) > 0)
         {
-            // Check and run a main thread task if available.
             if (auto task = getNextMainThreadTask(); task && !task.done())
             {
                 task.resume();
             }
-
-            // Independently check and run a worker thread task if available.
-            if (auto task = getNextWorkerThreadTask(); task && !task.done())
+            else
             {
-                task.resume();
+                // If no main thread tasks, help with worker tasks.
+                if (auto workerTask = getNextWorkerThreadTask(); workerTask && !workerTask.done())
+                {
+                    workerTask.resume();
+                }
+                else
+                {
+                    // If both queues are empty, yield to be a bit more friendly.
+                    std::this_thread::yield();
+                }
             }
-
-            // In a real scheduler, this would be a condition variable wait.
-            // For this test, a small sleep prevents a 100% CPU busy-wait.
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
+
+        // Signal workers to stop and wait for them to finish.
+        running_.store(false);
+        workerCondition_.notify_all();
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -258,7 +225,7 @@ public:
     template <ThreadAffinity Affinity>
     FORCE_INLINE HOT_PATH auto getNextTaskWithAffinity() noexcept -> std::coroutine_handle<>
     {
-        if constexpr (Affinity == ThreadAffinity::Main)
+        if (std::this_thread::get_id() == mainThreadId_)
         {
             return getNextMainThreadTask();
         }
@@ -269,30 +236,49 @@ public:
     }
 
 private:
+    void workerLoop()
+    {
+        while (running_.load())
+        {
+            std::coroutine_handle<> task = nullptr;
+
+            // First, try to get a task.
+            if (workerThreadTasks_.try_dequeue(task) && task)
+            {
+                task.resume();
+                // After finishing a task, continue the loop to check for more work immediately.
+                continue;
+            }
+
+            // If no task was found, enter a spin-wait phase.
+            auto spin_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+            while (std::chrono::steady_clock::now() < spin_until)
+            {
+                if (workerThreadTasks_.try_dequeue(task) && task)
+                {
+                    task.resume();
+                    break;
+                }
+                // Yield the processor to other threads.
+                std::this_thread::yield();
+            }
+        }
+    }
+
     FORCE_INLINE void scheduleMainThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        while (!mainThreadTasks_.push(std::move(handle)))
-        {
-            // Queue is full, this is a busy-wait which is not ideal for a real-world
-            // scenario, but acceptable for this benchmark-oriented test file.
-            // A real implementation would use a condition variable or other mechanism.
-        }
+        mainThreadTasks_.enqueue(handle);
     }
 
     void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept
     {
-        while (!workerThreadTasks_.push(std::move(handle)))
-        {
-            // Queue is full, this is a busy-wait which is not ideal for a real-world
-            // scenario, but acceptable for this benchmark-oriented test file.
-            // A real implementation would use a condition variable or other mechanism.
-        }
+        workerThreadTasks_.enqueue(handle);
     }
 
     FORCE_INLINE auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>
     {
         std::coroutine_handle<> handle = nullptr;
-        if (mainThreadTasks_.pop(handle))
+        if (mainThreadTasks_.try_dequeue(handle))
         {
             return handle;
         }
@@ -302,24 +288,27 @@ private:
     auto getNextWorkerThreadTask() noexcept -> std::coroutine_handle<>
     {
         std::coroutine_handle<> handle = nullptr;
-        if (workerThreadTasks_.pop(handle))
+        if (workerThreadTasks_.try_dequeue(handle))
         {
             return handle;
         }
         return std::noop_coroutine();
     }
 
-    // Place members with alignment requirements first to minimize padding.
-    SPSCQueue<std::coroutine_handle<>, 64> mainThreadTasks_;
-    SPSCQueue<std::coroutine_handle<>, 64> workerThreadTasks_;
+    // TODO: Technically mainThreadTasks_ only requires SPSC, so there might
+    //     : be an optimisation to be had here!
+    moodycamel::ConcurrentQueue<std::coroutine_handle<>> mainThreadTasks_;
+    moodycamel::ConcurrentQueue<std::coroutine_handle<>> workerThreadTasks_;
 
-    std::thread::id   mainThreadId_;
-    std::atomic<bool> running_{ true };
+    std::vector<std::thread> workerThreads_;
+
+    std::mutex              workerMutex_;
+    std::condition_variable workerCondition_;
+
+    std::thread::id     mainThreadId_;
+    std::atomic<bool>   running_{ true };
+    std::atomic<size_t> inFlightTasks_{ 0 };
 };
-
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
 
 namespace detail
 {
@@ -557,6 +546,9 @@ struct FinalAwaiter
                 using TCont = std::decay_t<decltype(cont)>;
                 if constexpr (std::is_same_v<TCont, std::monostate>)
                 {
+                    // This was a top-level task. It has finished.
+                    promise_->scheduler_->notifyTaskComplete();
+
                     // Symmetric Transfer on Task Completion:
                     // No continuation exists (a top-level task). Ask the scheduler for the next
                     // available task for this thread to execute immediately.
@@ -760,32 +752,43 @@ using AsyncTask = detail::TaskBase<ThreadAffinity::Worker, T>;
 // Desired usage
 //
 
+std::atomic<size_t> mainThreadTaskCounter{ 0 };
+std::atomic<size_t> workerTaskCounter{ 0 };
+std::atomic<size_t> totalTasksFinishedCounter{ 0 };
+
 // This task runs on a worker thread and returns an integer.
 auto innermostTask() -> AsyncTask<int>
 {
-    std::cout << "Running innermostTask on worker thread." << std::endl;
+    // Useful to confirm the worker tasks are running on worker threads
+    // spdlog::info("Running innermostTask on worker thread");
+
+    ++workerTaskCounter;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
     co_return 100;
 }
 
 // This task runs on the main thread, but awaits a worker thread task.
 auto innerTask() -> Task<int>
 {
+    // Useful to confirm the main tasks are running on main thread
+    // spdlog::info("Running innerTask on main thread");
+
+    ++mainThreadTaskCounter;
     // co_await triggers await_transform. Because the affinities differ (Main -> Worker),
     // this is a "slow path" symmetric transfer. The worker task is scheduled, and the main
     // thread would ask for a new main-thread task to run.
     // When innermostTask completes, its FinalAwaiter will resume this coroutine. Because the
     // affinities differ again (Worker -> Main), it's another symmetric transfer.
-    std::cout << "Running innerTask on main thread." << std::endl;
     co_return co_await innermostTask();
 }
 
 // A simple task that chains another task.
 auto middleTask() -> Task<void>
 {
+    ++mainThreadTaskCounter;
     // co_await triggers await_transform. Because the affinities match (Main -> Main),
     // this is a "fast path" direct transfer. Execution jumps into innerTask immediately
     // without involving the scheduler.
-    std::cout << "Running middleTask on main thread." << std::endl;
     co_await innerTask();
     co_return;
 }
@@ -793,31 +796,51 @@ auto middleTask() -> Task<void>
 // Another chaining task.
 auto outerTask() -> Task<void>
 {
-    std::cout << "Running outerTask on main thread." << std::endl;
+    ++mainThreadTaskCounter;
     co_await middleTask();
+    co_await innerTask();
     co_return;
 }
 
 // The top-level task that starts the entire chain.
 auto outermostTask() -> Task<int>
 {
-    std::cout << "Running outermostTask on main thread." << std::endl;
     co_await outerTask();
-    co_return co_await innerTask();
+    auto result = co_await innerTask();
+    std::ignore = result;
+    ++totalTasksFinishedCounter;
+    co_return result;
 }
 
-// Main test function
-int main()
+auto main() -> int
 {
-    Scheduler scheduler(4);
+    auto console = spdlog::stdout_color_mt("console");
+    spdlog::set_default_logger(console);
+    spdlog::set_pattern("[%H:%M:%S][t:%t] %v");
 
-    std::cout << "Scheduling outer task..." << std::endl;
-    scheduler.schedule(outermostTask());
+    {
+        const auto numThreads = 32;
+        const auto numTasks   = 100;
 
-    std::cout << "Running tasks..." << std::endl;
-    auto duration = scheduler.runExpiredTasks();
-    std::cout << "Scheduler ran for " << duration.count() << "ms." << std::endl;
+        Scheduler scheduler(numThreads);
 
-    std::cout << "\nTest completed successfully!" << std::endl;
+        spdlog::info("Scheduling outer task...");
+        for (int i = 0; i < numTasks; ++i)
+        {
+            scheduler.schedule(outermostTask());
+        }
+
+        spdlog::info("Running tasks...");
+        auto duration = scheduler.runExpiredTasks();
+        spdlog::info("Scheduler ran for {}ms.", duration.count());
+
+        spdlog::info("Number of threads: {}", numThreads);
+        spdlog::info("Total tasks scheduled: {}", numTasks);
+        spdlog::info("Total main thread coroutines executed: {}", mainThreadTaskCounter.load());
+        spdlog::info("Total worker coroutines executed: {}", workerTaskCounter.load());
+        spdlog::info("Total tasks finished: {}", totalTasksFinishedCounter.load());
+    }
+
+    spdlog::info("Test completed successfully!");
     return 0;
 }

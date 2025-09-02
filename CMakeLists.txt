@@ -20,19 +20,27 @@ target_link_libraries(Coro-Roro INTERFACE Threads::Threads)
 
 option(ENABLE_TESTS "Build test executable" ON)
 
+# Get CPM.cmake
+file(
+  DOWNLOAD
+  https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.40.8/CPM.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake
+  EXPECTED_HASH SHA256=78ba32abdf798bc616bab7c73aac32a17bbd7b06ad9e26a6add69de8f3ae4791
+)
+include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
+
 if(ENABLE_TESTS)
-    # Get CPM.cmake
-    file(
-      DOWNLOAD
-      https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.40.8/CPM.cmake
-      ${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake
-      EXPECTED_HASH SHA256=78ba32abdf798bc616bab7c73aac32a17bbd7b06ad9e26a6add69de8f3ae4791
-    )
-    include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
-    
     add_subdirectory(test)
 endif()
 
 add_executable(single_file_test
     single_file_test/single_file_test.cpp
 )
+
+target_include_directories(single_file_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/ext/include
+)
+
+CPMAddPackage("gh:gabime/spdlog@1.15.3")
+target_link_libraries(single_file_test PRIVATE spdlog::spdlog_header_only Threads::Threads)
