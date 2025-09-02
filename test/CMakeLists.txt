@@ -38,35 +38,35 @@ CPMAddPackage(
 
 # Add new comprehensive test suite
 add_executable(new_complex_workload_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/complex_workload_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/complex_workload_tests.cpp
 )
 
 add_executable(new_performance_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/performance_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/performance_tests.cpp
 )
 
 add_executable(new_pressure_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/pressure_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/pressure_tests.cpp
 )
 
 add_executable(new_worker_pool_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/worker_pool_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/worker_pool_tests.cpp
 )
 
 add_executable(new_interval_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/interval_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/interval_tests.cpp
 )
 
 add_executable(new_thread_verifier_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/thread_verifier_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/thread_verifier_tests.cpp
 )
 
 add_executable(new_scheduler_interval_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/scheduler_interval_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/scheduler_interval_tests.cpp
 )
 
 add_executable(new_delayed_interval_basic_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/new/delayed_interval_basic_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/old/delayed_interval_basic_test.cpp
 )
 
 # Simple test to verify basic compilation

@@ -32,3 +32,7 @@ if(ENABLE_TESTS)
     
     add_subdirectory(test)
 endif()
+
+add_executable(single_file_test
+    single_file_test/single_file_test.cpp
+)
