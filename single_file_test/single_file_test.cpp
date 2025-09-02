@@ -212,10 +212,12 @@ public:
     {
         auto start = std::chrono::steady_clock::now();
 
-        if (auto task_to_run = getNextMainThreadTask())
-        {
-            task_to_run.resume();
-        }
+        auto task_to_run = getNextMainThreadTask();
+        if (task_to_run && !task_to_run.done())
+            LIKELY
+            {
+                task_to_run.resume();
+            }
 
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -270,12 +272,12 @@ private:
         {
             return handle;
         }
-        return nullptr;
+        return std::noop_coroutine();
     }
 
     auto getNextWorkerThreadTask() noexcept -> std::coroutine_handle<>
     {
-        return nullptr;
+        return std::noop_coroutine();
     }
 
     // Place members with alignment requirements first to minimize padding.
