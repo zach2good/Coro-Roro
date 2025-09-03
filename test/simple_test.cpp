@@ -35,25 +35,77 @@ TEST_F(BasicSchedulerTests, RunExpiredTasksEmptyQueues)
 
 TEST_F(BasicSchedulerTests, BasicTaskCreation)
 {
-    auto task = []() -> Task<void> {
+    auto task = []() -> Task<void>
+    {
         co_return;
     }();
-    
+
     SUCCEED();
 }
 
 TEST_F(BasicSchedulerTests, BasicTaskExecution)
 {
-    // For now, just test that we can create and schedule a task
-    // The actual execution will be tested once we have proper scheduling working
-    auto task = []() -> Task<void> {
+    const auto        mainThreadId = std::this_thread::get_id();
+    std::atomic<bool> taskExecuted{ false };
+
+    auto task = [&]() -> Task<void>
+    {
+        EXPECT_EQ(std::this_thread::get_id(), mainThreadId);
+        taskExecuted = true;
         co_return;
     }();
-    
-    // Schedule the task - this should not crash
+
     scheduler_->schedule(std::move(task));
 
-    // Run the scheduler - this should not crash
     const auto duration = scheduler_->runExpiredTasks();
     EXPECT_GE(duration.count(), 0);
+
+    EXPECT_TRUE(taskExecuted);
+}
+
+TEST_F(BasicSchedulerTests, BasicAsyncTaskExecution)
+{
+    const auto        mainThreadId = std::this_thread::get_id();
+    std::atomic<bool> taskExecuted{ false };
+
+    auto task = [&]() -> AsyncTask<void>
+    {
+        EXPECT_NE(std::this_thread::get_id(), mainThreadId);
+        taskExecuted = true;
+        co_return;
+    }();
+
+    scheduler_->schedule(std::move(task));
+
+    const auto duration = scheduler_->runExpiredTasks();
+    EXPECT_GE(duration.count(), 0);
+
+    EXPECT_TRUE(taskExecuted);
+}
+
+TEST_F(BasicSchedulerTests, BasicNestedTasksExecution)
+{
+    const auto        mainThreadId = std::this_thread::get_id();
+    std::atomic<bool> taskExecuted{ false };
+
+    auto innerTask = [&] () -> AsyncTask<void>
+    {
+        EXPECT_NE(std::this_thread::get_id(), mainThreadId);
+        taskExecuted = true;
+        co_return;
+    };
+
+    auto task = [&]() -> Task<void>
+    {
+        EXPECT_EQ(std::this_thread::get_id(), mainThreadId);
+        co_await innerTask();
+        co_return;
+    }();
+
+    scheduler_->schedule(std::move(task));
+
+    const auto duration = scheduler_->runExpiredTasks();
+    EXPECT_GE(duration.count(), 0);
+
+    EXPECT_TRUE(taskExecuted);
 }
