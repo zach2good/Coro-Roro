@@ -34,72 +34,19 @@ CPMAddPackage(
   OPTIONS "INSTALL_GTEST OFF" "gtest_force_shared_crt"
 )
 
-# Old test targets removed - all tests have been ported to the new test suite
-
-# Add new comprehensive test suite
-add_executable(new_complex_workload_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/complex_workload_tests.cpp
-)
-
-add_executable(new_performance_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/performance_tests.cpp
-)
-
-add_executable(new_pressure_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/pressure_tests.cpp
-)
-
-add_executable(new_worker_pool_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/worker_pool_tests.cpp
-)
-
-add_executable(new_interval_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/interval_tests.cpp
-)
-
-add_executable(new_thread_verifier_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/thread_verifier_tests.cpp
-)
-
-add_executable(new_scheduler_interval_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/scheduler_interval_tests.cpp
-)
-
-add_executable(new_delayed_interval_basic_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/old/delayed_interval_basic_test.cpp
-)
-
-# Simple test to verify basic compilation
-add_executable(simple_test
+add_executable(simple_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/simple_test.cpp
 )
 
-# References to old new_coro_roro_tests target removed
-
-# Configure new test executables
-foreach(test_target IN ITEMS
-    new_complex_workload_tests
-    new_performance_tests
-    new_pressure_tests
-    new_worker_pool_tests
-    new_interval_tests
-    new_thread_verifier_tests
-    new_scheduler_interval_tests
-    new_delayed_interval_basic_tests
-    simple_test
+target_include_directories(simple_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
 )
-    target_include_directories(${test_target} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/include
-    )
 
-    target_link_libraries(${test_target} PRIVATE Coro-Roro gtest gtest_main)
+target_link_libraries(simple_tests PRIVATE Coro-Roro gtest gtest_main)
 
-    if(MSVC)
-        target_compile_options(${test_target} PRIVATE /W4 /WX /permissive-)
-    else()
-        target_compile_options(${test_target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
-    endif()
-endforeach()
-
-# All old test targets removed - new test suite uses individual targets
+if(MSVC)
+    target_compile_options(simple_tests PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(simple_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
