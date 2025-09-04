@@ -761,7 +761,7 @@ struct PromiseBase
             Scheduler*                          scheduler_;
             std::coroutine_handle<promise_type> handle_;
 
-            // Explicit constructor to handle initialization from the enclosing function.
+            // Explicit constructor to handle initialisation from the enclosing function.
             TransferAwaiter(Scheduler* scheduler, TaskBase<NextAffinity, NextT>&& task) noexcept
             : scheduler_(scheduler)
             , handle_(task.handle_)
@@ -899,9 +899,9 @@ public:
     // Constructor & Destructor
     //
 
-    IntervalTask(std::function<Task<void>()> factory,
+    IntervalTask(Scheduler*                  scheduler,
+                 std::function<Task<void>()> factory,
                  std::chrono::milliseconds   interval,
-                 Scheduler*                  scheduler,
                  bool                        isOneTime = false);
 
     ~IntervalTask();
@@ -1082,9 +1082,9 @@ auto Scheduler::scheduleInterval(std::chrono::duration<Rep, Period> interval,
 
     // Create the interval task
     auto intervalTask = std::make_unique<IntervalTask>(
+        this,
         std::move(factory),
         intervalMs,
-        this,
         false // Not a one-time task
     );
 
@@ -1115,9 +1115,9 @@ auto Scheduler::scheduleDelayed(std::chrono::duration<Rep, Period> delay,
 
     // Create the interval task (one-time task)
     auto intervalTask = std::make_unique<IntervalTask>(
+        this,
         std::move(factory),
         delayMs,
-        this,
         true // One-time task
     );
 
@@ -1143,9 +1143,9 @@ using AsyncTask = detail::TaskBase<ThreadAffinity::Worker, T>;
 // IntervalTask Implementation
 //
 
-inline IntervalTask::IntervalTask(std::function<Task<void>()> factory,
+inline IntervalTask::IntervalTask(Scheduler*                  scheduler,
+                                  std::function<Task<void>()> factory,
                                   std::chrono::milliseconds   interval,
-                                  Scheduler*                  scheduler,
                                   bool                        isOneTime)
 : factory_(std::move(factory))
 , nextExecution_(std::chrono::steady_clock::now() - std::chrono::milliseconds(1))
