@@ -464,50 +464,97 @@ struct TransferPolicy {
 
 #### Constructor & Setup
 ```cpp
-class Scheduler {
+class Scheduler final
+{
 public:
     // Initialize with specified number of worker threads
-    explicit Scheduler(size_t workerThreadCount = std::thread::hardware_concurrency() - 1);
+    explicit Scheduler(size_t workerThreadCount = 4);
 
     // Scheduler automatically starts worker threads that run continuously
     // Main thread calls runExpiredTasks() periodically to pump tasks
+    ~Scheduler();
+
+    // Non-copyable, non-movable
+    Scheduler(const Scheduler&) = delete;
+    Scheduler& operator=(const Scheduler&) = delete;
+    Scheduler(Scheduler&&) = delete;
+    Scheduler& operator=(Scheduler&&) = delete;
 };
 ```
 
 #### Scheduling Methods
 ```cpp
-class Scheduler {
+class Scheduler final
+{
 public:
-    // Schedule a Task (automatically determines affinity from Task type)
-    template <typename TaskType>
-    void schedule(TaskType task);
+    // Basic task scheduling - takes ownership of coroutine handle
+    template <ThreadAffinity Affinity, typename T>
+    HOT_PATH void schedule(detail::TaskBase<Affinity, T>&& task);
 
-    // Schedule multiple tasks efficiently
-    template <typename... TaskTypes>
-    void schedule(TaskTypes... tasks);
+    // Schedule callable that returns a Task/AsyncTask
+    template <typename Callable>
+    void schedule(Callable&& callable)
+        requires std::is_invocable_v<Callable> &&
+                 requires { std::invoke_result_t<Callable>{}; } &&
+                 requires { std::invoke_result_t<Callable>{}.handle_; };
 
-    // EVENT-DRIVEN ARCHITECTURE: Process expired tasks and execute until complete
-    // Called periodically (e.g., every 200ms) from external event loop
-    // Processes expired interval tasks, executes all tasks until main queue empty,
-    // and waits for all interval task children to complete
-    void runExpiredTasks();
+    // Schedule callable that returns void (wrapped in coroutine)
+    template <typename Callable>
+    void schedule(Callable&& callable)
+        requires std::is_invocable_v<Callable> &&
+                 std::is_void_v<std::invoke_result_t<Callable>>;
 
-    // Same as above but with custom reference time (useful for testing)
-    auto runExpiredTasks(std::chrono::steady_clock::time_point referenceTime) ->
-        std::chrono::milliseconds;
+    // Process expired tasks and execute until complete
+    HOT_PATH auto runExpiredTasks() -> std::chrono::milliseconds;
+    auto runExpiredTasks(std::chrono::steady_clock::time_point referenceTime) -> std::chrono::milliseconds;
 
-    // Internal methods (not part of public API)
+    // Interval and delayed task scheduling
+    template <typename Rep, typename Period, typename Callable>
+    auto scheduleInterval(std::chrono::duration<Rep, Period> interval,
+                          Callable&& callable) -> CancellationToken;
+
+    template <typename Rep, typename Period, typename Callable>
+    auto scheduleDelayed(std::chrono::duration<Rep, Period> delay,
+                         Callable&& callable) -> CancellationToken;
+
+    // Status and information
+    auto isRunning() const -> bool;
+    auto getWorkerThreadCount() const -> size_t;
+    auto getInFlightTaskCount() const -> size_t;
+
+    // Internal task completion notification
+    void notifyTaskComplete();
+
 private:
-    // Get next task for current thread
-    std::coroutine_handle<> getNextTaskForCurrentThread();
-
-    // Get next task for specific affinity
+    // Internal scheduling methods
     template <ThreadAffinity Affinity>
-    std::coroutine_handle<> getNextTaskWithAffinity();
+    FORCE_INLINE HOT_PATH void scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept;
 
-    // Extract handle from task (implementation detail)
-    template <typename TaskType>
-    std::coroutine_handle<> extractHandle(TaskType& task);
+    template <ThreadAffinity Affinity>
+    FORCE_INLINE HOT_PATH auto getNextTaskWithAffinity() noexcept -> std::coroutine_handle<>;
+
+    // Queue management
+    void scheduleMainThreadTask(std::coroutine_handle<> handle) noexcept;
+    void scheduleWorkerThreadTask(std::coroutine_handle<> handle) noexcept;
+    auto getNextMainThreadTask() noexcept -> std::coroutine_handle<>;
+    auto getNextWorkerThreadTask() noexcept -> std::coroutine_handle<>;
+
+    // Timer system
+    void processExpiredIntervalTasks();
+
+    // Worker thread management
+    void workerLoop();
+
+    // Data members
+    moodycamel::ConcurrentQueue<std::coroutine_handle<>> mainThreadTasks_;
+    moodycamel::ConcurrentQueue<std::coroutine_handle<>> workerThreadTasks_;
+    std::vector<std::thread> workerThreads_;
+    std::mutex workerMutex_;
+    std::condition_variable workerCondition_;
+    std::priority_queue<std::unique_ptr<IntervalTask>> intervalQueue_;
+    std::mutex timerMutex_;
+    std::atomic<bool> running_{true};
+    std::atomic<size_t> inFlightTasks_{0};
 };
 ```
 

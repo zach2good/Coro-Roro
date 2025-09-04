@@ -2,13 +2,13 @@
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [TransferPolicy System](#transferpolicy-system)
-3. [Core Concepts](#core-concepts)
-4. [Disabled Language Features](#disabled-language-features)
+2. [Architecture Overview](#architecture-overview)
+3. [Core Components](#core-components)
+4. [TransferPolicy System](#transferpolicy-system)
 5. [Awaiter Protocol](#awaiter-protocol)
 6. [Promise and Task Relationship](#promise-and-task-relationship)
 7. [Await Transform](#await-transform)
-8. [Compile-Time Transfer, Suspension, and Routing](#compile-time-transfer-suspension-and-routing)
+8. [Compile-Time Transfer and Routing](#compile-time-transfer-and-routing)
 9. [Performance Optimizations](#performance-optimizations)
 10. [Summary](#summary)
 
@@ -17,11 +17,12 @@
 **Coro-Roro** is a high-performance coroutine scheduler that achieves **zero-overhead** thread transfers through compile-time optimization. The system eliminates expensive runtime thread ID lookups and context switches by encoding thread affinity directly into coroutine types.
 
 ### 🎯 Key Achievements
-- **~37% improvement** in thread switching overhead
-- **50% reduction** in context switches through symmetric transfers
-- **Zero system calls** - no `std::this_thread::get_id()` calls
+- **Zero-overhead thread transfers** through compile-time template dispatch
+- **Symmetric transfers** - Automatic task handoff prevents idle threads
+- **Zero system calls** - no `std::this_thread::get_id()` calls in hot path
 - **Cross-platform optimization** with compiler-specific attributes
 - **Perfect branch prediction** through template specialization
+- **Lockless scheduling** using `moodycamel::ConcurrentQueue`
 
 ### 🚀 Core Innovation: TransferPolicy
 
@@ -29,17 +30,25 @@ The **TransferPolicy template system** is the heart of Coro-Roro's performance. 
 
 ```cpp
 template <ThreadAffinity CurrentAffinity, ThreadAffinity NextAffinity>
-struct TransferPolicy
+struct TransferPolicy final
 {
-    [[nodiscard]] CORO_HOT CORO_INLINE
-    static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<> {
-        if constexpr (CurrentAffinity == NextAffinity) {
-            // Same thread - NO transfer needed, resume immediately!
-            CORO_LIKELY(return handle);
-        } else {
-            // Different thread - schedule and perform symmetric transfer
-            scheduler->scheduleHandleWithAffinity<NextAffinity>(handle);
-            return scheduler->getNextTaskWithAffinity<CurrentAffinity>();
+    NO_DISCARD FORCE_INLINE HOT_PATH 
+    static auto transfer(Scheduler* scheduler, std::coroutine_handle<> handle) noexcept -> std::coroutine_handle<>
+    {
+        if constexpr (CurrentAffinity == NextAffinity)
+        {
+            // Fast Path: Same-affinity co_await.
+            // Execution is transferred directly to the next coroutine, like a function call.
+            return handle;
+        }
+        else
+        {
+            // Slow Path: Cross-affinity co_await.
+            // 1. Schedule the next coroutine on its correct thread.
+            scheduler->template scheduleHandleWithAffinity<NextAffinity>(handle);
+            // 2. Symmetric Transfer: The current thread immediately gets a new task for itself
+            //    to avoid becoming idle, maximizing throughput.
+            return scheduler->template getNextTaskWithAffinity<CurrentAffinity>();
         }
     }
 };
@@ -50,6 +59,127 @@ struct TransferPolicy
 - ✅ **Symmetric transfers** - Automatic task handoff prevents idle threads
 - ✅ **Type safety** - Invalid transfers caught at compile time
 - ✅ **Performance** - Eliminates expensive thread ID system calls
+
+## Architecture Overview
+
+### Modular Header-Only Design
+
+The Coro-Roro library is organized as a clean, modular header-only library:
+
+```
+include/corororo/
+├── corororo.h                    # Main header with includes only
+└── detail/
+    ├── macros.h                  # Compiler attributes and macros
+    ├── logging.h                 # Logging functionality
+    ├── enums.h                   # ThreadAffinity enum
+    ├── forward_declarations.h    # Forward declarations
+    ├── transfer_policy.h         # TransferPolicy declaration
+    ├── transfer_policy_impl.h    # TransferPolicy implementation
+    ├── continuation.h            # Continuation types
+    ├── task_base.h               # TaskBase template
+    ├── awaiters.h                # InitialAwaiter and FinalAwaiter
+    ├── promise.h                 # Promise types
+    ├── interval_task.h           # IntervalTask declaration
+    ├── interval_task_impl.h      # IntervalTask implementation
+    ├── cancellation_token.h      # CancellationToken declaration
+    ├── cancellation_token_impl.h # CancellationToken implementation
+    ├── scheduler.h               # Scheduler class and implementation
+    ├── task_aliases.h            # Task and AsyncTask aliases
+    └── scheduler_extensions.h    # Additional scheduler methods
+```
+
+### Clean Public API
+
+The main `corororo.h` header provides a clean public interface:
+
+```cpp
+namespace CoroRoro
+{
+// Bring logging function into main namespace for convenience
+using detail::coro_log;
+
+// Bring commonly used types into main namespace for convenience
+using detail::ContinuationVariant;
+using detail::TransferPolicy;
+}
+```
+
+## Core Components
+
+### Task Types and Aliases
+
+The library provides two main task types with compile-time thread affinity:
+
+```cpp
+// Main thread tasks - execute on the main thread
+template <typename T = void>
+using Task = CoroRoro::detail::TaskBase<CoroRoro::ThreadAffinity::Main, T>;
+
+// Worker thread tasks - execute on worker threads
+template <typename T = void>
+using AsyncTask = CoroRoro::detail::TaskBase<CoroRoro::ThreadAffinity::Worker, T>;
+```
+
+### TaskBase Implementation
+
+The core `TaskBase` template provides the awaitable interface:
+
+```cpp
+template <ThreadAffinity Affinity, typename T>
+struct NO_DISCARD TaskBase final
+{
+    using ResultType = T;
+    static constexpr ThreadAffinity affinity = Affinity;
+    using promise_type = detail::Promise<Affinity, T>;
+
+    // Move-only semantics for clear ownership
+    TaskBase(TaskBase const&) = delete;
+    TaskBase& operator=(TaskBase const&) = delete;
+    TaskBase(TaskBase&& other) noexcept;
+    TaskBase& operator=(TaskBase&& other) noexcept;
+
+    // Awaitable interface
+    bool await_ready() const noexcept;
+    auto await_suspend(std::coroutine_handle<> continuation) noexcept -> std::coroutine_handle<>;
+    auto await_resume() const noexcept -> T;
+
+private:
+    std::coroutine_handle<promise_type> handle_;
+};
+```
+
+### Promise System
+
+The promise system uses a base class with template specialization:
+
+```cpp
+template <typename Derived, ThreadAffinity Affinity, typename T>
+struct PromiseBase
+{
+    Scheduler*          scheduler_{ nullptr };
+    ContinuationVariant continuation_{};
+    bool                isIntervalTask_{ false };
+    static constexpr ThreadAffinity affinity = Affinity;
+
+    // Coroutine interface
+    auto get_return_object() noexcept;
+    auto initial_suspend() const noexcept;
+    auto final_suspend() noexcept;
+    void unhandled_exception() noexcept;
+
+    // await_transform for custom awaitable behavior
+    template <ThreadAffinity NextAffinity, typename NextT>
+    auto await_transform(detail::TaskBase<NextAffinity, NextT>&& nextTask) noexcept;
+};
+
+// Specialized promises for different return types
+template <ThreadAffinity Affinity, typename T>
+struct Promise final : public PromiseBase<Promise<Affinity, T>, Affinity, T>;
+
+template <ThreadAffinity Affinity>
+struct Promise<Affinity, void> final : public PromiseBase<Promise<Affinity, void>, Affinity, void>;
+```
 
 ## TransferPolicy System
 
@@ -654,53 +784,111 @@ struct TaskBase
 
 ## Awaiter Protocol
 
-### The Three Methods
-Every awaiter must implement three methods that form the **awaiter protocol**:
+### InitialAwaiter
 
-#### 1. `await_ready()` - Should we suspend?
-```cpp
-bool await_ready() const noexcept
-```
-- **Purpose**: Determines if suspension is necessary
-- **Return**: `true` = proceed immediately, `false` = suspend and call `await_suspend`
-- **Performance**: Called first, should be fast
-- **Our optimization**: TransferPolicy handles affinity in `await_suspend()`
+The `InitialAwaiter` ensures newly created coroutines always suspend immediately:
 
 ```cpp
-// Example: TransferPolicy handles affinity - await_ready() focuses on completion!
-bool await_ready() const noexcept
+struct InitialAwaiter final
 {
-    // TransferPolicy handles thread affinity optimization in await_suspend()
-    // await_ready() just checks if the awaited coroutine is already complete
-    return handle_.done();
-}
+    constexpr bool await_ready() const noexcept
+    {
+        return false; // Always suspend (hand over to await_suspend)
+    }
+    constexpr void await_suspend(std::coroutine_handle<>) const noexcept
+    {
+        // No-op - just suspend
+    }
+    constexpr void await_resume() const noexcept
+    {
+        // No-op - just resume
+    }
+};
 ```
 
-#### 2. `await_suspend(continuation)` - What to do when suspending?
-```cpp
-auto await_suspend(std::coroutine_handle<> continuation) noexcept -> std::coroutine_handle<>
-```
-- **Purpose**: Handle the suspension logic
-- **Parameters**: The continuation handle (calling coroutine)
-- **Return**: Handle to resume immediately, or `std::noop_coroutine()`
-- **Our implementation**: Schedule task and attempt symmetric transfer
+**Purpose**: Gives the `schedule()` function control of the coroutine handle before it begins execution, preventing it from running eagerly on the caller's stack.
+
+### FinalAwaiter
+
+The `FinalAwaiter` handles coroutine completion and symmetric transfer:
 
 ```cpp
-// Maximum performance: Direct TransferPolicy usage
-auto await_suspend(std::coroutine_handle<Promise> coroutine) noexcept -> std::coroutine_handle<>
+template <ThreadAffinity Affinity, typename Promise>
+struct FinalAwaiter final
 {
-    // Direct TransferPolicy call - zero runtime conditionals!
-    return TransferPolicy<ThreadAffinity::Main, ThreadAffinity::Main>::transfer(scheduler_, coroutine);
-}
+    Promise* promise_;
+
+    FORCE_INLINE bool await_ready() const noexcept
+    {
+        return false; // Always suspend (hand over to await_suspend)
+    }
+
+    NO_DISCARD HOT_PATH std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) const noexcept
+    {
+        return std::visit(
+            [&](auto&& continuation) noexcept -> std::coroutine_handle<>
+            {
+                using TContinuation = std::decay_t<decltype(continuation)>;
+                if constexpr (std::is_same_v<TContinuation, std::monostate>)
+                {
+                    // This was a top-level task. It has finished.
+                    promise_->scheduler_->notifyTaskComplete();
+                    // Symmetric Transfer: Ask the scheduler for the next available task
+                    return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
+                }
+                else
+                {
+                    // Resume Parent Coroutine using the Continuation object
+                    return continuation.resume(promise_->scheduler_);
+                }
+            },
+            promise_->continuation_);
+    }
+
+    FORCE_INLINE void await_resume() const noexcept
+    {
+        // No-op - just resume
+    }
+};
 ```
 
-#### 3. `await_resume()` - What to do when resuming?
+**Purpose**: When a coroutine completes, it either resumes its parent or asks the scheduler for a new task, enabling symmetric transfer.
+
+### TransferAwaiter
+
+The `TransferAwaiter` is created by `await_transform` to handle `co_await` operations:
+
 ```cpp
-T await_resume() const noexcept  // or void for no return value
+struct TransferAwaiter final
+{
+    Scheduler*                          scheduler_;
+    std::coroutine_handle<promise_type> handle_;
+
+    FORCE_INLINE bool await_ready() const noexcept
+    {
+        return !handle_ || handle_.done();
+    }
+
+    NO_DISCARD HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+    {
+        // Store this coroutine's handle as the continuation for the next task
+        handle_.promise().continuation_ = detail::Continuation<NextAffinity, Affinity>{ awaiting_coroutine };
+        
+        // Perform the "downward" transfer using TransferPolicy
+        return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, handle_);
+    }
+
+    FORCE_INLINE auto await_resume() const noexcept
+    {
+        if constexpr (!std::is_void_v<NextT>)
+        {
+            return handle_.promise().result();
+        }
+    }
+};
 ```
-- **Purpose**: Extract result from completed coroutine
-- **Return**: The result value (if any)
-- **Called**: After coroutine completes and we're resumed
+
+**Purpose**: Handles the actual `co_await` operation, storing the continuation and using TransferPolicy for optimal thread transfer.
 
 ## Promise and Task Relationship
 
@@ -736,50 +924,75 @@ Task<T> (awaitable) <---owns---> coroutine_handle<Promise> <---owns---> Promise
 ## Await Transform
 
 ### What is `await_transform`?
-The `await_transform` method in the promise allows **intercepting and transforming** any `co_await` expression:
+The `await_transform` method in the promise allows **intercepting and transforming** any `co_await` expression. In Coro-Roro, it creates a custom `TransferAwaiter` for our Task types:
 
 ```cpp
-template <typename Awaitable>
-auto await_transform(Awaitable&& awaitable)
+template <ThreadAffinity NextAffinity, typename NextT>
+HOT_PATH auto await_transform(detail::TaskBase<NextAffinity, NextT>&& nextTask) noexcept
 {
-    // We can inspect, modify, or replace the awaitable here
-    if constexpr (requires { awaitable.handle_; })
+    struct TransferAwaiter final
     {
-        // This is one of our Tasks - ensure scheduler reference
-        if (!awaitable.handle_.promise().scheduler_)
+        using promise_type = typename detail::TaskBase<NextAffinity, NextT>::promise_type;
+
+        Scheduler*                          scheduler_;
+        std::coroutine_handle<promise_type> handle_;
+
+        // Constructor propagates scheduler reference
+        TransferAwaiter(Scheduler* scheduler, detail::TaskBase<NextAffinity, NextT>&& task) noexcept
+        : scheduler_(scheduler)
+        , handle_(task.handle_)
         {
-            awaitable.handle_.promise().scheduler_ = this->scheduler_;
+            // Propagate scheduler pointer to the next task
+            handle_.promise().scheduler_ = scheduler_;
+            // Release handle from task to prevent double destruction
+            task.handle_ = nullptr;
         }
-        return std::forward<Awaitable>(awaitable);
-    }
-    else
-    {
-        // Some other awaitable - pass through
-        return std::forward<Awaitable>(awaitable);
-    }
-}
-```
 
-### Our Implementation:
-```cpp
-auto await_transform_impl(auto&& awaitable) const noexcept
+        // Move-only semantics
+        TransferAwaiter(const TransferAwaiter&) = delete;
+        TransferAwaiter& operator=(const TransferAwaiter&) = delete;
+        TransferAwaiter(TransferAwaiter&&) = default;
+        TransferAwaiter& operator=(TransferAwaiter&&) = default;
+
+        FORCE_INLINE bool await_ready() const noexcept
+        {
+            return !handle_ || handle_.done();
+        }
+
+        NO_DISCARD HOT_PATH FORCE_INLINE auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+        {
+            // Store this coroutine's handle as the continuation for the next task
+            handle_.promise().continuation_ = detail::Continuation<NextAffinity, Affinity>{ awaiting_coroutine };
+            
+            // Perform the "downward" transfer using TransferPolicy
+            return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, handle_);
+        }
+
+        FORCE_INLINE auto await_resume() const noexcept
+        {
+            if constexpr (!std::is_void_v<NextT>)
+            {
+                return handle_.promise().result();
+            }
+        }
+    };
+    return TransferAwaiter{ scheduler_, std::move(nextTask) };
+}
+
+// Pass-through for other awaitable types
+template <typename AwaitableType>
+auto await_transform(AwaitableType&& awaitable) noexcept
 {
-    if constexpr (requires { awaitable.handle_; })
-    {
-        // Our Task types - inject scheduler reference
-        awaitable.handle_.promise().scheduler_ = this->scheduler_;
-        return awaitable;
-    }
-    // Standard library awaitables pass through unchanged
-    return std::forward<decltype(awaitable)>(awaitable);
+    return std::forward<AwaitableType>(awaitable);
 }
 ```
 
-### Benefits:
-1. **Automatic injection**: Scheduler reference automatically propagated
-2. **Zero runtime cost**: Compile-time `if constexpr` checks
-3. **Transparent**: User code doesn't need to know about scheduler management
-4. **Type-safe**: Only affects our Task types
+### Key Features:
+1. **Scheduler Propagation**: Automatically injects scheduler reference into awaited tasks
+2. **Continuation Storage**: Stores the awaiting coroutine as a continuation
+3. **TransferPolicy Integration**: Uses TransferPolicy for optimal thread transfer
+4. **Type Safety**: Only affects our Task types, others pass through unchanged
+5. **Move Semantics**: Properly handles move-only coroutine handles
 
 ## Compile-Time Transfer, Suspension, and Routing
 
