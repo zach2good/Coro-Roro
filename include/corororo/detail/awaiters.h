@@ -25,7 +25,7 @@ struct InitialAwaiter final
 {
     constexpr bool await_ready() const noexcept
     {
-        return false; // Always suspend
+        return false; // Always suspend (hand over to await_suspend)
     }
     constexpr void await_suspend(std::coroutine_handle<>) const noexcept
     {
@@ -49,7 +49,7 @@ struct FinalAwaiter final
 
     FORCE_INLINE bool await_ready() const noexcept
     {
-        return false; // Always suspend
+        return false; // Always suspend (hand over to await_suspend)
     }
 
     NO_DISCARD HOT_PATH std::coroutine_handle<> await_suspend(std::coroutine_handle<> /* self */) const noexcept
