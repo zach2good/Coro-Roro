@@ -99,6 +99,7 @@ scheduler.schedule(coordinator());
 - **Lockless queues** - `moodycamel::ConcurrentQueue` for maximum throughput
 - **Symmetric transfers** - Same-thread transfers are zero-overhead, cross-thread transfers use symmetric handoff
 - **Efficient task processing** - Main thread continues processing until all tasks complete, then yields
+- **Main thread assistance** - Main thread helps process worker tasks when worker threads are busy
 - **Optimized worker threads** - 5ms aggressive spinning before sleeping to avoid CV overhead for quick tasks
 - **Memory efficient** - RAII-based resource management with automatic cleanup
 
