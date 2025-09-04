@@ -34,42 +34,22 @@ CPMAddPackage(
   OPTIONS "INSTALL_GTEST OFF" "gtest_force_shared_crt"
 )
 
-add_executable(simple_tests
+add_executable(corororo_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/simple_tests.cpp
-)
-
-add_executable(callable_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/callable_tests.cpp
-)
-
-add_executable(interval_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/interval_tests.cpp
-)
-
-
-add_executable(landsandboat_simulation
     ${CMAKE_CURRENT_SOURCE_DIR}/landsandboat_simulation.cpp
 )
 
-set(TEST_TARGETS
-    simple_tests
-    callable_tests
-    interval_tests
-    landsandboat_simulation
+target_include_directories(corororo_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
 )
 
-foreach(target IN LISTS TEST_TARGETS)
-    target_include_directories(${target} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/include
-    )
+target_link_libraries(corororo_tests PRIVATE Coro-Roro gtest gtest_main)
 
-    target_link_libraries(${target} PRIVATE Coro-Roro gtest gtest_main)
-
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /WX /permissive-)
-    else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
-    endif()
-endforeach()
-
+if(MSVC)
+    target_compile_options(corororo_tests PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(corororo_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()

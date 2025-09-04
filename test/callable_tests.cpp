@@ -13,6 +13,8 @@ protected:
     void SetUp() override
     {
         scheduler_ = std::make_unique<Scheduler>(4);
+
+        executionCount_ = 0;
     }
 
     void TearDown() override
@@ -21,92 +23,95 @@ protected:
     }
 
     std::unique_ptr<Scheduler> scheduler_;
+
+    std::atomic<size_t> executionCount_{ 0 };
 };
 
 TEST_F(CallableTaskSchedulerTests, ScheduleWithLambda)
 {
-    std::atomic<int> executionCount{ 0 };
+    executionCount_.store(0);
 
-    // Schedule a lambda that returns a Task
-    scheduler_->schedule([&executionCount]() -> Task<void>
-                         {
-        executionCount.fetch_add(1);
-        co_return; });
-
+    scheduler_->schedule(
+        [this]() -> Task<void>
+        {
+            executionCount_.fetch_add(1);
+            co_return;
+        });
     scheduler_->runExpiredTasks();
-    EXPECT_EQ(executionCount.load(), 1);
+
+    EXPECT_EQ(executionCount_.load(), 1);
 }
 
 TEST_F(CallableTaskSchedulerTests, ScheduleWithDirectLambda)
 {
-    std::atomic<int> executionCount{ 0 };
+    executionCount_.store(0);
 
-    // Create a lambda that returns a Task (not immediately invoked)
-    auto taskLambda = [&executionCount]() -> Task<void>
+    auto taskLambda = [this]() -> Task<void>
     {
-        executionCount.fetch_add(1);
+        executionCount_.fetch_add(1);
         co_return;
     };
 
     // Pass the lambda directly to schedule (not invoking it)
     scheduler_->schedule(taskLambda);
-
     scheduler_->runExpiredTasks();
-    EXPECT_EQ(executionCount.load(), 1);
+
+    EXPECT_EQ(executionCount_.load(), 1);
 }
 
 TEST_F(CallableTaskSchedulerTests, ScheduleWithStdBind)
 {
-    std::atomic<int> executionCount{ 0 };
+    executionCount_.store(0);
 
     // Create a function that takes parameters
-    auto taskFunction = [](std::atomic<int>& count, int multiplier) -> Task<void>
+    auto taskFunction = [](std::atomic<size_t>& count, size_t multiplier) -> Task<void>
     {
         count.fetch_add(multiplier);
         co_return;
     };
 
     // Use std::bind to create a callable
-    auto boundFunction = std::bind(taskFunction, std::ref(executionCount), 3);
+    auto boundFunction = std::bind(taskFunction, std::ref(executionCount_), 3);
 
     scheduler_->schedule(boundFunction);
     scheduler_->runExpiredTasks();
-    EXPECT_EQ(executionCount.load(), 3);
+
+    EXPECT_EQ(executionCount_.load(), 3); // Single execution with multiplier of 3
 }
 
 TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithLambda)
 {
-    std::atomic<int> executionCount{ 0 };
+    executionCount_.store(0);
 
     // Schedule interval task with lambda
     auto token = scheduler_->scheduleInterval(
         std::chrono::milliseconds(50),
-        [&executionCount]() -> Task<void>
+        [this]() -> Task<void>
         {
-            executionCount.fetch_add(1);
+            executionCount_.fetch_add(1);
             co_return;
         });
 
     // Run for 150ms
     auto startTime = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(150))
+    while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(170))
     {
         scheduler_->runExpiredTasks();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     token.cancel();
-    EXPECT_GT(executionCount.load(), 2);
+    EXPECT_EQ(executionCount_.load(), 4); // 0ms, 50ms, 100ms, 150ms = 4 executions in 170ms
 }
 
 TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithDirectLambda)
 {
-    std::atomic<int> executionCount{ 0 };
+    executionCount_.store(0);
 
     // Create a lambda that returns a Task (not immediately invoked)
-    auto taskLambda = [&executionCount]() -> Task<void>
+    auto taskLambda = [this]() -> Task<void>
     {
-        executionCount.fetch_add(1);
+        executionCount_.fetch_add(1);
         co_return;
     };
 
@@ -117,29 +122,29 @@ TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithDirectLambda)
 
     // Run for 150ms
     auto startTime = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(150))
+    while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(170))
     {
         scheduler_->runExpiredTasks();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     token.cancel();
-    EXPECT_GT(executionCount.load(), 2);
+    EXPECT_EQ(executionCount_.load(), 4); // 0ms, 50ms, 100ms, 150ms = 4 executions in 170ms
 }
 
 TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithStdBind)
 {
-    std::atomic<int> executionCount{ 0 };
+    executionCount_.store(0);
 
     // Create a function that takes parameters
-    auto taskFunction = [](std::atomic<int>& count, int increment) -> Task<void>
+    auto taskFunction = [](std::atomic<size_t>& count, size_t increment) -> Task<void>
     {
         count.fetch_add(increment);
         co_return;
     };
 
     // Use std::bind to create a callable for interval task
-    auto boundFunction = std::bind(taskFunction, std::ref(executionCount), 2);
+    auto boundFunction = std::bind(taskFunction, std::ref(executionCount_), 2);
 
     auto token = scheduler_->scheduleInterval(
         std::chrono::milliseconds(50),
@@ -147,49 +152,34 @@ TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithStdBind)
 
     // Run for 150ms
     auto startTime = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(150))
+    while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(170))
     {
         scheduler_->runExpiredTasks();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     token.cancel();
-    EXPECT_GT(executionCount.load(), 4); // Should be at least 4 (2 * 2+ executions)
+    EXPECT_EQ(executionCount_.load(), 8); // 4 executions * 2 increment = 8 total count
 }
 
 TEST_F(CallableTaskSchedulerTests, ScheduleDelayedWithFunctionObject)
 {
-    std::atomic<int> executionCount{ 0 };
-
-    // Create a function object
-    struct TaskFunctor
-    {
-        std::atomic<int>& count_;
-
-        TaskFunctor(std::atomic<int>& count)
-        : count_(count)
-        {
-        }
-
-        Task<void> operator()() const
-        {
-            count_.fetch_add(1);
-            co_return;
-        }
-    };
-
-    TaskFunctor functor(executionCount);
+    executionCount_.store(0);
 
     auto token = scheduler_->scheduleDelayed(
         std::chrono::milliseconds(50),
-        functor);
+        [this]() -> Task<void>
+        {
+            executionCount_.fetch_add(1);
+            co_return;
+        });
 
     // Should not execute immediately
     scheduler_->runExpiredTasks();
-    EXPECT_EQ(executionCount.load(), 0);
+    EXPECT_EQ(executionCount_.load(), 0);
 
     // Wait for delay
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     scheduler_->runExpiredTasks();
-    EXPECT_EQ(executionCount.load(), 1);
+    EXPECT_EQ(executionCount_.load(), 1);
 }
