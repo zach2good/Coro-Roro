@@ -42,8 +42,8 @@ public:
         return task ? task : std::noop_coroutine();
     }
 
-    // Convert to Scheduler* for promise compatibility (safe because we control the usage)
-    operator Scheduler*() { return reinterpret_cast<Scheduler*>(this); }
+    // Get a Scheduler* for promise compatibility
+    Scheduler* asSchedulerPtr() { return reinterpret_cast<Scheduler*>(this); }
 
 private:
     std::coroutine_handle<> scheduledTask_ = nullptr;
@@ -71,9 +71,9 @@ inline void runCoroutineInline(Task<void>&& task)
     // Create a dummy scheduler to satisfy the FinalAwaiter
     DummyScheduler dummyScheduler;
 
-    // Set the scheduler on the promise (using conversion operator for type safety)
+    // Set the scheduler on the promise
     auto& promise = handle.promise();
-    promise.scheduler_ = dummyScheduler; // Uses DummyScheduler::operator Scheduler*()
+    promise.scheduler_ = dummyScheduler.asSchedulerPtr();
 
     // Simply resume the coroutine - the DummyScheduler will handle any scheduled tasks inline
     handle.resume();

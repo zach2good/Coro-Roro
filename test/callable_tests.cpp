@@ -24,8 +24,11 @@ protected:
 
     std::unique_ptr<Scheduler> scheduler_;
 
-    std::atomic<size_t> executionCount_{ 0 };
+    static std::atomic<size_t> executionCount_;
 };
+
+// Initialize static member
+std::atomic<size_t> CallableTaskSchedulerTests::executionCount_{ 0 };
 
 TEST_F(CallableTaskSchedulerTests, ScheduleWithLambda)
 {

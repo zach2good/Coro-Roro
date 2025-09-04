@@ -36,8 +36,11 @@ protected:
     std::atomic<size_t> task2Count_{ 0 };
     std::atomic<size_t> simultaneousExecutions_{ 0 };
     std::atomic<size_t> maxSimultaneousExecutions_{ 0 };
-    std::atomic<bool>   executed_{ false };
+    static std::atomic<bool> executed_;
 };
+
+// Initialize static member
+std::atomic<bool> IntervalTaskSchedulerTests::executed_{ false };
 
 //
 // Interval Task Factory Tests
