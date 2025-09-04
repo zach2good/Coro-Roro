@@ -270,6 +270,25 @@ public:
         }
     }
 
+    // Static method to run a coroutine inline to completion without requiring a scheduler.
+    // This function only works with Task<void> (Main affinity) and blocks until completion.
+    // AsyncTask types are not supported to keep the implementation simple.
+    static void runCoroutineInlineDetached(detail::TaskBase<ThreadAffinity::Main, void>&& task)
+    {
+        auto handle = task.handle();
+        task.handle_ = nullptr;
+
+        if (handle && !handle.done())
+        {
+            handle.resume();
+        }
+
+        if (handle)
+        {
+            handle.destroy();
+        }
+    }
+
 private:
     void workerLoop()
     {

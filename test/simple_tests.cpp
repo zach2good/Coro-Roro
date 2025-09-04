@@ -151,3 +151,99 @@ TEST_F(BasicSchedulerTests, BasicAlternatingNestedTasksExecution)
     EXPECT_NE(taskThreadOrder[5], mainThreadId);
     EXPECT_EQ(taskThreadOrder[6], mainThreadId);
 }
+
+TEST_F(BasicSchedulerTests, RunBasicCoroutineWithoutScheduler)
+{
+    std::atomic<bool> taskExecuted{ false };
+
+    auto task = [&]() -> Task<void>
+    {
+        taskExecuted = true;
+        co_return;
+    };
+
+    // Will block and run coroutine inline to completion.
+    // Does not require a scheduler.
+    // Completely ignores affinity.
+    Scheduler::runCoroutineInlineDetached(task());
+
+    EXPECT_TRUE(taskExecuted);
+}
+
+TEST_F(BasicSchedulerTests, RunSimpleCoroutineChainWithoutScheduler)
+{
+    std::atomic<size_t> tasksExecuted{ 0 };
+
+    auto innerTask1 = [&]() -> Task<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_return;
+    };
+
+    auto innerTask2 = [&]() -> Task<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_await innerTask1();
+        co_return;
+    };
+
+    auto innerTask3 = [&]() -> Task<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_await innerTask2();
+        co_return;
+    };
+
+    auto task = [&]() -> Task<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_await innerTask3();
+        co_return;
+    };
+
+    // Will block and run coroutine inline to completion.
+    // Does not require a scheduler.
+    // Completely ignores affinity.
+    Scheduler::runCoroutineInlineDetached(task());
+
+    EXPECT_EQ(tasksExecuted.load(), 4);
+}
+
+TEST_F(BasicSchedulerTests, RunComplexCoroutineChainWithoutScheduler)
+{
+    std::atomic<size_t> tasksExecuted{ 0 };
+
+    auto innerTask1 = [&]() -> AsyncTask<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_return;
+    };
+
+    auto innerTask2 = [&]() -> Task<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_await innerTask1();
+        co_return;
+    };
+
+    auto innerTask3 = [&]() -> AsyncTask<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_await innerTask2();
+        co_return;
+    };
+
+    auto task = [&]() -> Task<void>
+    {
+        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
+        co_await innerTask3();
+        co_return;
+    };
+
+    // Will block and run coroutine inline to completion.
+    // Does not require a scheduler.
+    // Completely ignores affinity.
+    Scheduler::runCoroutineInlineDetached(task());
+
+    EXPECT_EQ(tasksExecuted.load(), 4);
+}

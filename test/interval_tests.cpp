@@ -181,7 +181,7 @@ TEST_F(IntervalTaskSchedulerTests, CancellationTokenConstruction)
     // Let it execute once
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     scheduler_->runExpiredTasks();
-    int countAfterFirst = executionCount_.load();
+    size_t countAfterFirst = executionCount_.load();
     EXPECT_GT(countAfterFirst, 0);
 
     // Cancel the task
@@ -204,7 +204,7 @@ TEST_F(IntervalTaskSchedulerTests, CancellationTokenBasic)
     // Let it execute once
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     scheduler_->runExpiredTasks();
-    int countAfterFirst = executionCount_.load();
+    size_t countAfterFirst = executionCount_.load();
     EXPECT_GT(countAfterFirst, 0);
 
     // Cancel the task
@@ -220,7 +220,7 @@ TEST_F(IntervalTaskSchedulerTests, CancellationTokenBasic)
 TEST_F(IntervalTaskSchedulerTests, CancellationTokenDestruction)
 {
     executionCount_.store(0);
-    int countAfterFirst = 0;
+    size_t countAfterFirst = 0;
 
     {
         auto token = scheduler_->scheduleInterval(
@@ -243,7 +243,7 @@ TEST_F(IntervalTaskSchedulerTests, CancellationTokenDestruction)
     // Wait and run again - should not execute more
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     scheduler_->runExpiredTasks();
-    int finalCount = executionCount_.load();
+    size_t finalCount = executionCount_.load();
     EXPECT_EQ(finalCount, countAfterFirst); // Should not have executed more after token destruction
 }
 

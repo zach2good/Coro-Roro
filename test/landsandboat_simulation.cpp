@@ -15,7 +15,7 @@ protected:
     void SetUp() override
     {
         scheduler_ = std::make_unique<Scheduler>(numThreads_);
-        for (size_t i = 0; i < numZones_; ++i)
+        for (size_t i = 0U; i < numZones_; ++i)
         {
             zones_.emplace_back(createRealisticZone(i, numEntitiesPerZone_));
         }
@@ -27,9 +27,9 @@ protected:
         zones_.clear();
     }
 
-    size_t numThreads_         = 8;
-    size_t numZones_           = 3;
-    size_t numEntitiesPerZone_ = 100;
+    size_t numThreads_         = 8U;
+    size_t numZones_           = 3U;
+    size_t numEntitiesPerZone_ = 100U;
 
     std::unique_ptr<Scheduler>         scheduler_;
     std::vector<std::unique_ptr<Zone>> zones_;
