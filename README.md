@@ -8,8 +8,8 @@ Coro-Roro provides a sophisticated coroutine scheduling system with two main tas
 
 ## Features
 
-- 🚀 **Zero-overhead thread transfers** - Compile-time template dispatch eliminates runtime thread checks
-- 🧵 **Symmetric transfer optimization** - Automatic task handoff prevents idle threads
+- 🚀 **Optimized thread transfers** - Compile-time template dispatch minimizes runtime thread checks
+- 🧵 **Symmetric transfer optimization** - Same-thread transfers are zero-overhead, cross-thread uses symmetric handoff
 - 📦 **Header-only library** - Just include and go, no linking required
 - 🔒 **Lockless scheduling** - Uses `moodycamel::ConcurrentQueue` for maximum performance
 - ⏰ **Interval & delayed tasks** - Built-in timer system with cancellation support
@@ -94,12 +94,12 @@ scheduler.schedule(coordinator());
 
 ## Performance Characteristics
 
-- **Zero system calls** - No `std::this_thread::get_id()` calls in hot path
-- **Compile-time optimization** - Template instantiation eliminates runtime conditionals
+- **Zero system calls in hot path** - No `std::this_thread::get_id()` calls in scheduling hot path (only in debug logging)
+- **Compile-time optimization** - Template instantiation eliminates runtime conditionals for thread affinity
 - **Lockless queues** - `moodycamel::ConcurrentQueue` for maximum throughput
-- **Symmetric transfers** - Automatic task handoff prevents thread idle time
+- **Symmetric transfers** - Same-thread transfers are zero-overhead, cross-thread transfers use symmetric handoff
 - **Efficient task processing** - Main thread continues processing until all tasks complete, then yields
-- **Worker thread efficiency** - Worker threads aggressively spin for 5ms before sleeping to avoid CV overhead for quick tasks
+- **Optimized worker threads** - 5ms aggressive spinning before sleeping to avoid CV overhead for quick tasks
 - **Memory efficient** - RAII-based resource management with automatic cleanup
 
 ## Building
