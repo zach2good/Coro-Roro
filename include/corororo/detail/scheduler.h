@@ -284,14 +284,32 @@ private:
             }
             else
             {
-                // If no task was found, go to sleep and wait for a notification.
-                std::unique_lock<std::mutex> lock(workerMutex_);
-                workerCondition_.wait(
-                    lock,
-                    [this]
+                // Spin for 5ms before going to sleep to avoid CV overhead for quick tasks
+                auto       spinStart    = std::chrono::steady_clock::now();
+                const auto spinDuration = std::chrono::milliseconds(5);
+
+                while (running_.load() && std::chrono::steady_clock::now() - spinStart < spinDuration)
+                {
+                    if (workerThreadTasks_.try_dequeue(task))
                     {
-                        return !running_.load() || workerThreadTasks_.size_approx() > 0;
-                    });
+                        task.resume();
+                        break; // Exit spin loop and continue main loop
+                    }
+                    // Aggressive spinning - no yield to maximize performance
+                    // The 5ms limit prevents excessive CPU usage
+                }
+
+                // If still no task after spinning, go to sleep
+                if (!task)
+                {
+                    std::unique_lock<std::mutex> lock(workerMutex_);
+                    workerCondition_.wait(
+                        lock,
+                        [this]
+                        {
+                            return !running_.load() || workerThreadTasks_.size_approx() > 0;
+                        });
+                }
             }
         }
     }

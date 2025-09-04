@@ -58,6 +58,7 @@ struct PromiseBase
         }
         else
         {
+            coro_log("Exception in regular task - terminating");
             std::terminate();
         }
     }

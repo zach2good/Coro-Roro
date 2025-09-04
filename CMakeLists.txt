@@ -33,28 +33,3 @@ if(ENABLE_TESTS)
     include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
     add_subdirectory(test)
 endif()
-
-add_executable(single_file_test
-    single_file_test/single_file_test.cpp
-)
-
-target_link_libraries(single_file_test PRIVATE Coro-Roro)
-if(MSVC)
-    target_compile_options(single_file_test PRIVATE
-        # /RTC1
-        # /analyze
-        /W4 # OK!
-        /WX
-        /permissive-
-
-        # /Wall # Please kill me :(
-        # /wd4820 # 'padding' added to the end of the struct
-        # /wd4710 # function not inlined
-    )
-else()
-    target_compile_options(single_file_test PRIVATE
-        -Wall
-        -Wextra
-        -Werror
-    )
-endif()
