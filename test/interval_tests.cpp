@@ -30,12 +30,12 @@ protected:
 
     std::unique_ptr<Scheduler> scheduler_;
 
-    std::atomic<size_t> executionCount_{ 0 };
-    std::atomic<bool>   firstExecution_{ false };
-    std::atomic<size_t> task1Count_{ 0 };
-    std::atomic<size_t> task2Count_{ 0 };
-    std::atomic<size_t> simultaneousExecutions_{ 0 };
-    std::atomic<size_t> maxSimultaneousExecutions_{ 0 };
+    std::atomic<size_t>      executionCount_{ 0 };
+    std::atomic<bool>        firstExecution_{ false };
+    std::atomic<size_t>      task1Count_{ 0 };
+    std::atomic<size_t>      task2Count_{ 0 };
+    std::atomic<size_t>      simultaneousExecutions_{ 0 };
+    std::atomic<size_t>      maxSimultaneousExecutions_{ 0 };
     static std::atomic<bool> executed_;
 };
 
@@ -153,6 +153,31 @@ TEST_F(IntervalTaskSchedulerTests, ScheduleDelayedBasic)
     EXPECT_FALSE(executed_.load());
 
     // Wait for delay
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    scheduler_->runExpiredTasks();
+    EXPECT_TRUE(executed_.load());
+}
+
+TEST_F(IntervalTaskSchedulerTests, ScheduleAtBasic)
+{
+    executed_.store(false);
+
+    // Schedule at a specific time point (now + 100ms)
+    auto executionTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+
+    auto token = scheduler_->scheduleAt(
+        executionTime,
+        [this]() -> Task<void>
+        {
+            executed_.store(true);
+            co_return;
+        });
+
+    // Should not execute immediately
+    scheduler_->runExpiredTasks();
+    EXPECT_FALSE(executed_.load());
+
+    // Wait for the scheduled time
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     scheduler_->runExpiredTasks();
     EXPECT_TRUE(executed_.load());

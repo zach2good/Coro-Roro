@@ -221,6 +221,13 @@ public:
     auto scheduleDelayed(std::chrono::duration<Rep, Period> delay,
                          Callable&&                         callable) -> CancellationToken;
 
+    // Schedule a task to execute at a specific time point
+    // Callable must return Task<void> (return values are discarded)
+    // Supports lambdas, std::bind, function objects, etc.
+    template <typename Clock, typename Duration, typename Callable>
+    auto scheduleAt(std::chrono::time_point<Clock, Duration> executionTime,
+                    Callable&&                               callable) -> CancellationToken;
+
     //
     // Status and Information
     //
@@ -275,7 +282,7 @@ public:
     // AsyncTask types are not supported to keep the implementation simple.
     static void runCoroutineInlineDetached(detail::TaskBase<ThreadAffinity::Main, void>&& task)
     {
-        auto handle = task.handle();
+        auto handle  = task.handle();
         task.handle_ = nullptr;
 
         if (handle && !handle.done())
@@ -494,6 +501,39 @@ auto Scheduler::scheduleDelayed(std::chrono::duration<Rep, Period> delay,
 
     // Set the next execution time to now + delay
     intervalTask->setNextExecution(std::chrono::steady_clock::now() + delayMs);
+
+    // Create the cancellation token
+    CancellationToken token(intervalTask.get(), this);
+
+    // Add to priority queue
+    {
+        std::lock_guard<std::mutex> lock(timerMutex_);
+        intervalQueue_.push(std::move(intervalTask));
+    }
+
+    return token;
+}
+
+template <typename Clock, typename Duration, typename Callable>
+auto Scheduler::scheduleAt(std::chrono::time_point<Clock, Duration> executionTime,
+                           Callable&&                               callable) -> CancellationToken
+{
+    // Create the factory function
+    auto factory = [callable = std::forward<Callable>(callable)]() -> CoroRoro::detail::TaskBase<CoroRoro::ThreadAffinity::Main, void>
+    {
+        return callable();
+    };
+
+    // Create the interval task (one-time task)
+    auto intervalTask = std::make_unique<IntervalTask>(
+        this,
+        std::move(factory),
+        std::chrono::milliseconds(0), // No delay needed since we set absolute time
+        true                          // One-time task
+    );
+
+    // Set the next execution time to the specified time point
+    intervalTask->setNextExecution(executionTime);
 
     // Create the cancellation token
     CancellationToken token(intervalTask.get(), this);
