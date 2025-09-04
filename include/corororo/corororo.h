@@ -4,9 +4,12 @@
 #include <chrono>
 #include <condition_variable>
 #include <coroutine>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <queue>
 #include <sstream>
 #include <thread>
 #include <type_traits>
@@ -74,7 +77,7 @@ namespace CoroRoro
 // Logging
 //
 
-void coro_log(const std::string& message)
+inline void coro_log(const std::string& message)
 {
     static auto mainThreadString = std::this_thread::get_id();
     std::cout << ((std::this_thread::get_id() == mainThreadString) ? "[Main Thread] " : "[Worker Thread] ") << message << std::endl;
@@ -95,6 +98,8 @@ enum class ThreadAffinity : uint8_t
 //
 
 class Scheduler;
+class IntervalTask;
+class CancellationToken;
 
 namespace detail
 {
@@ -179,9 +184,24 @@ public:
             }
     }
 
+    // Schedule a callable that returns a Task/AsyncTask
+    // Supports lambdas, std::bind, function objects, etc.
+    template <typename Callable>
+    void schedule(Callable&& callable)
+        requires std::is_invocable_v<Callable> && 
+                 requires { std::invoke_result_t<Callable>{}; } &&
+                 requires { std::invoke_result_t<Callable>{}.handle_; }
+    {
+        auto task = std::forward<Callable>(callable)();
+        schedule(std::move(task));
+    }
+
     HOT_PATH auto runExpiredTasks() -> std::chrono::milliseconds
     {
         auto start = std::chrono::steady_clock::now();
+        
+        // Process expired interval tasks
+        processExpiredIntervalTasks();
 
         while (inFlightTasks_.load(std::memory_order_acquire) > 0)
         {
@@ -208,6 +228,77 @@ public:
 
         const auto end = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    }
+
+    auto runExpiredTasks(std::chrono::steady_clock::time_point /* referenceTime */) -> std::chrono::milliseconds
+    {
+        auto start = std::chrono::steady_clock::now();
+        
+        // Process expired interval tasks
+        processExpiredIntervalTasks();
+
+        while (inFlightTasks_.load(std::memory_order_acquire) > 0)
+        {
+            if (auto task = getNextMainThreadTask(); task && !task.done())
+            {
+                task.resume();
+            }
+            else
+            {
+                // If the main thread runs out of work and we've still got tasks in flight,
+                // we should help out by running worker tasks until everything is done, or
+                // until we get more main thread tasks.
+                if (auto workerTask = getNextWorkerThreadTask(); workerTask && !workerTask.done())
+                {
+                    workerTask.resume();
+                }
+                else
+                {
+                    // If both queues are empty, yield.
+                    std::this_thread::yield();
+                }
+            }
+        }
+
+        const auto end = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    }
+
+    //
+    // Interval Task Factory API
+    //
+
+    // Schedule an interval task that executes immediately, then every interval
+    // Callable must return Task<void> (return values are discarded)
+    // Supports lambdas, std::bind, function objects, etc.
+    template <typename Rep, typename Period, typename Callable>
+    auto scheduleInterval(std::chrono::duration<Rep, Period> interval,
+                         Callable&& callable) -> CancellationToken;
+
+    // Schedule a delayed task that executes once after delay
+    // Callable must return Task<void> (return values are discarded)
+    // Supports lambdas, std::bind, function objects, etc.
+    template <typename Rep, typename Period, typename Callable>
+    auto scheduleDelayed(std::chrono::duration<Rep, Period> delay,
+                        Callable&& callable) -> CancellationToken;
+
+    //
+    // Status and Information
+    //
+
+    auto isRunning() const -> bool
+    {
+        return running_.load();
+    }
+
+    auto getWorkerThreadCount() const -> size_t
+    {
+        return workerThreads_.size();
+    }
+
+    auto getInFlightTaskCount() const -> size_t
+    {
+        return inFlightTasks_.load();
     }
 
     template <ThreadAffinity Affinity>
@@ -300,9 +391,21 @@ private:
     std::mutex               workerMutex_;
     std::condition_variable  workerCondition_;
 
+    // Timer system
+    std::priority_queue<std::unique_ptr<IntervalTask>> intervalQueue_;
+    std::mutex timerMutex_;
+    
+    // Process expired interval tasks
+    void processExpiredIntervalTasks();
+
     std::atomic<bool>   running_{ true };
     std::atomic<size_t> inFlightTasks_{ 0 };
 };
+
+
+//
+// Comparison operator for priority queue (moved after IntervalTask definition)
+//
 
 namespace detail
 {
@@ -732,7 +835,325 @@ struct Promise<Affinity, void> final : public PromiseBase<Promise<Affinity, void
 template <typename T = void>
 using Task = detail::TaskBase<ThreadAffinity::Main, T>;
 
+//
+// IntervalTask
+//
+// Represents a recurring task that executes at regular intervals.
+// Uses factory pattern to create fresh task instances on each execution.
+//
+
+class IntervalTask final
+{
+public:
+    //
+    // Constructor & Destructor
+    //
+
+    IntervalTask(std::function<Task<void>()> factory,
+                std::chrono::milliseconds interval,
+                Scheduler* scheduler,
+                bool isOneTime = false);
+
+    ~IntervalTask();
+
+    IntervalTask(const IntervalTask&)            = delete;
+    IntervalTask& operator=(const IntervalTask&) = delete;
+    IntervalTask(IntervalTask&&)                 = delete;
+    IntervalTask& operator=(IntervalTask&&)      = delete;
+
+    //
+    // Execution Control
+    //
+
+    // Try to create a tracked task from the factory
+    // Returns nullopt if a child task is already in flight (single-execution guarantee)
+    auto createTrackedTask() -> std::optional<Task<void>>;
+
+    // Execute the task (called by scheduler when timer expires)
+    void execute();
+
+    // Mark as cancelled
+    void markCancelled();
+
+    //
+    // Status and Information
+    //
+
+    auto isCancelled() const -> bool;
+    auto getNextExecution() const -> std::chrono::steady_clock::time_point;
+    void updateNextExecution();
+
+    //
+    // Cancellation Token Management
+    //
+
+    void setToken(class CancellationToken* token);
+    void clearTokenPointer();
+
+private:
+    //
+    // Internal Methods
+    //
+
+    Task<void> createTrackedWrapper(Task<void> originalTask);
+
+    //
+    // Member Variables
+    //
+
+    std::function<Task<void>()> factory_;
+    std::chrono::steady_clock::time_point nextExecution_;
+    std::chrono::milliseconds interval_;
+    [[maybe_unused]] Scheduler* scheduler_;
+    class CancellationToken* token_{nullptr};
+    std::atomic<bool> cancelled_{false};
+    std::atomic<bool> hasActiveChild_{false};
+    [[maybe_unused]] bool isOneTime_{false};
+};
+
+//
+// CancellationToken
+//
+// Provides safe cancellation of interval and delayed tasks.
+// Uses bidirectional pointer management for cleanup.
+//
+
+class CancellationToken final
+{
+public:
+    //
+    // Constructor & Destructor
+    //
+
+    CancellationToken(IntervalTask* task, Scheduler* scheduler);
+    ~CancellationToken();
+
+    CancellationToken(const CancellationToken&)            = delete;
+    CancellationToken& operator=(const CancellationToken&) = delete;
+    CancellationToken(CancellationToken&&)                 = delete;
+    CancellationToken& operator=(CancellationToken&&)      = delete;
+
+    //
+    // Cancellation Control
+    //
+
+    void cancel();
+    auto valid() const -> bool;
+    auto isCancelled() const -> bool;
+    explicit operator bool() const;
+
+    //
+    // Task Management
+    //
+
+    void setTask(IntervalTask* task);
+    void clearTokenPointer();
+
+private:
+    //
+    // Member Variables
+    //
+
+    IntervalTask* task_{nullptr};
+    [[maybe_unused]] Scheduler* scheduler_;
+    std::atomic<bool> cancelled_{false};
+};
+
+//
+// Comparison operators for priority queue (moved after IntervalTask definition)
+//
+
+inline bool operator<(const IntervalTask& lhs, const IntervalTask& rhs)
+{
+    return lhs.getNextExecution() > rhs.getNextExecution(); // Min-heap
+}
+
+//
+// Scheduler Method Implementations
+//
+
+// Implementation of processExpiredIntervalTasks moved here to avoid incomplete type issues
+inline void Scheduler::processExpiredIntervalTasks()
+{
+    auto now = std::chrono::steady_clock::now();
+    
+    {
+        std::lock_guard<std::mutex> lock(timerMutex_);
+        
+        while (!intervalQueue_.empty())
+        {
+            auto& intervalTask = intervalQueue_.top();
+            if (intervalTask->getNextExecution() > now)
+            {
+                break; // No more expired tasks
+            }
+            
+            // Remove from priority queue temporarily
+            auto task = std::move(const_cast<std::unique_ptr<IntervalTask>&>(intervalQueue_.top()));
+            intervalQueue_.pop();
+            
+            // Execute the task
+            task->execute();
+            
+            // If it's not a one-time task, reschedule it
+            if (!task->isCancelled())
+            {
+                intervalQueue_.push(std::move(task));
+            }
+        }
+    }
+}
+
+template <typename Rep, typename Period, typename Callable>
+auto Scheduler::scheduleInterval(std::chrono::duration<Rep, Period> interval,
+                                Callable&& callable) -> CancellationToken
+{
+    // Minimal stub implementation - will fail tests
+    (void)interval;
+    (void)callable;
+    return CancellationToken(nullptr, this);
+}
+
+template <typename Rep, typename Period, typename Callable>
+auto Scheduler::scheduleDelayed(std::chrono::duration<Rep, Period> delay,
+                               Callable&& callable) -> CancellationToken
+{
+    // Minimal stub implementation - will fail tests
+    (void)delay;
+    (void)callable;
+    return CancellationToken(nullptr, this);
+}
+
 template <typename T>
 using AsyncTask = detail::TaskBase<ThreadAffinity::Worker, T>;
+
+//
+// IntervalTask Implementation
+//
+
+inline IntervalTask::IntervalTask(std::function<Task<void>()> factory,
+                                 std::chrono::milliseconds interval,
+                                 Scheduler* scheduler,
+                                 bool isOneTime)
+    : factory_(std::move(factory))
+    , nextExecution_(std::chrono::steady_clock::now())
+    , interval_(interval)
+    , scheduler_(scheduler)
+    , isOneTime_(isOneTime)
+{
+}
+
+inline IntervalTask::~IntervalTask()
+{
+    if (token_)
+    {
+        token_->clearTokenPointer();
+    }
+}
+
+inline auto IntervalTask::createTrackedTask() -> std::optional<Task<void>>
+{
+    // Minimal stub - always returns nullopt to fail tests
+    return std::nullopt;
+}
+
+inline void IntervalTask::execute()
+{
+    // Minimal stub - does nothing to fail tests
+}
+
+inline void IntervalTask::markCancelled()
+{
+    cancelled_.store(true);
+}
+
+inline auto IntervalTask::isCancelled() const -> bool
+{
+    return cancelled_.load();
+}
+
+inline auto IntervalTask::getNextExecution() const -> std::chrono::steady_clock::time_point
+{
+    return nextExecution_;
+}
+
+inline void IntervalTask::updateNextExecution()
+{
+    nextExecution_ += interval_;
+}
+
+inline void IntervalTask::setToken(CancellationToken* token)
+{
+    token_ = token;
+}
+
+inline void IntervalTask::clearTokenPointer()
+{
+    token_ = nullptr;
+}
+
+inline Task<void> IntervalTask::createTrackedWrapper(Task<void> originalTask)
+{
+    // Minimal stub - returns empty task to fail tests
+    (void)originalTask;
+    return []() -> Task<void> { co_return; }();
+}
+
+//
+// CancellationToken Implementation
+//
+
+inline CancellationToken::CancellationToken(IntervalTask* task, Scheduler* scheduler)
+    : task_(task)
+    , scheduler_(scheduler)
+{
+    if (task_)
+    {
+        task_->setToken(this);
+    }
+}
+
+inline CancellationToken::~CancellationToken()
+{
+    if (task_)
+    {
+        task_->clearTokenPointer();
+        task_->markCancelled();
+    }
+}
+
+inline void CancellationToken::cancel()
+{
+    cancelled_.store(true);
+    if (task_)
+    {
+        task_->markCancelled();
+    }
+}
+
+inline auto CancellationToken::valid() const -> bool
+{
+    return !cancelled_.load() && task_ != nullptr;
+}
+
+inline auto CancellationToken::isCancelled() const -> bool
+{
+    return cancelled_.load();
+}
+
+inline CancellationToken::operator bool() const
+{
+    return valid();
+}
+
+inline void CancellationToken::setTask(IntervalTask* task)
+{
+    task_ = task;
+}
+
+inline void CancellationToken::clearTokenPointer()
+{
+    task_ = nullptr;
+}
 
 } // namespace CoroRoro

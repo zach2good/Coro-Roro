@@ -45,7 +45,8 @@ TEST_F(BasicSchedulerTests, BasicTaskCreation)
 
 TEST_F(BasicSchedulerTests, BasicTaskExecution)
 {
-    const auto        mainThreadId = std::this_thread::get_id();
+    const auto mainThreadId = std::this_thread::get_id();
+
     std::atomic<bool> taskExecuted{ false };
 
     auto task = [&]() -> Task<void>
@@ -65,7 +66,8 @@ TEST_F(BasicSchedulerTests, BasicTaskExecution)
 
 TEST_F(BasicSchedulerTests, BasicAsyncTaskExecution)
 {
-    const auto        mainThreadId = std::this_thread::get_id();
+    const auto mainThreadId = std::this_thread::get_id();
+
     std::atomic<bool> taskExecuted{ false };
 
     auto task = [&]() -> AsyncTask<void>
@@ -85,10 +87,11 @@ TEST_F(BasicSchedulerTests, BasicAsyncTaskExecution)
 
 TEST_F(BasicSchedulerTests, BasicNestedTasksExecution)
 {
-    const auto        mainThreadId = std::this_thread::get_id();
+    const auto mainThreadId = std::this_thread::get_id();
+
     std::atomic<bool> taskExecuted{ false };
 
-    auto innerTask = [&] () -> AsyncTask<void>
+    auto innerTask = [&]() -> AsyncTask<void>
     {
         EXPECT_NE(std::this_thread::get_id(), mainThreadId);
         taskExecuted = true;
@@ -108,4 +111,43 @@ TEST_F(BasicSchedulerTests, BasicNestedTasksExecution)
     EXPECT_GE(duration.count(), 0);
 
     EXPECT_TRUE(taskExecuted);
+}
+
+TEST_F(BasicSchedulerTests, BasicAlternatingNestedTasksExecution)
+{
+    const auto mainThreadId = std::this_thread::get_id();
+
+    std::vector<std::thread::id> taskThreadOrder{};
+
+    auto innerTask = [&]() -> AsyncTask<void>
+    {
+        taskThreadOrder.push_back(std::this_thread::get_id());
+        co_return;
+    };
+
+    auto task = [&]() -> Task<void>
+    {
+        taskThreadOrder.push_back(std::this_thread::get_id());
+        co_await innerTask();
+        taskThreadOrder.push_back(std::this_thread::get_id());
+        co_await innerTask();
+        taskThreadOrder.push_back(std::this_thread::get_id());
+        co_await innerTask();
+        taskThreadOrder.push_back(std::this_thread::get_id());
+        co_return;
+    }();
+
+    scheduler_->schedule(std::move(task));
+
+    const auto duration = scheduler_->runExpiredTasks();
+    EXPECT_GE(duration.count(), 0);
+
+    EXPECT_EQ(taskThreadOrder.size(), 7);
+    EXPECT_EQ(taskThreadOrder[0], mainThreadId);
+    EXPECT_NE(taskThreadOrder[1], mainThreadId);
+    EXPECT_EQ(taskThreadOrder[2], mainThreadId);
+    EXPECT_NE(taskThreadOrder[3], mainThreadId);
+    EXPECT_EQ(taskThreadOrder[4], mainThreadId);
+    EXPECT_NE(taskThreadOrder[5], mainThreadId);
+    EXPECT_EQ(taskThreadOrder[6], mainThreadId);
 }
