@@ -208,3 +208,48 @@ TEST_F(BasicSchedulerTests, RunSimpleCoroutineChainWithoutScheduler)
 
     EXPECT_EQ(tasksExecuted.load(), 4);
 }
+
+TEST_F(BasicSchedulerTests, RunCoroutineWithReturnValue)
+{
+    // Test coroutine that returns an integer
+    auto intTask = []() -> Task<int>
+    {
+        co_return 42;
+    };
+
+    // Run the coroutine and get the result
+    int result = runCoroutineInline(intTask());
+
+    EXPECT_EQ(result, 42);
+}
+
+TEST_F(BasicSchedulerTests, RunCoroutineWithStringReturnValue)
+{
+    // Test coroutine that returns a string
+    auto stringTask = []() -> Task<std::string>
+    {
+        co_return std::string("Hello, World!");
+    };
+
+    // Run the coroutine and get the result
+    std::string result = runCoroutineInline(stringTask());
+
+    EXPECT_EQ(result, "Hello, World!");
+}
+
+TEST_F(BasicSchedulerTests, RunCoroutineWithComplexReturnValue)
+{
+    // Test coroutine that returns a complex object
+    auto complexTask = []() -> Task<std::vector<int>>
+    {
+        std::vector<int> data = { 1, 2, 3, 4, 5 };
+        co_return data;
+    };
+
+    // Run the coroutine and get the result
+    std::vector<int> result = runCoroutineInline(complexTask());
+
+    EXPECT_EQ(result.size(), 5);
+    EXPECT_EQ(result[0], 1);
+    EXPECT_EQ(result[4], 5);
+}
