@@ -35,6 +35,7 @@
 #include "detail/transfer_policy_impl.h"
 #include "detail/interval_task_impl.h"
 #include "detail/cancellation_token_impl.h"
+#include "detail/utils.h"
 // clang-format on
 
 namespace CoroRoro
@@ -46,5 +47,8 @@ using detail::coro_log;
 // Bring commonly used types into main namespace for convenience
 using detail::ContinuationVariant;
 using detail::TransferPolicy;
+
+// Bring utility functions into main namespace for convenience
+using detail::runCoroutineInline;
 
 } // namespace CoroRoro

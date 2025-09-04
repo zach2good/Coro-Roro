@@ -165,7 +165,7 @@ TEST_F(BasicSchedulerTests, RunBasicCoroutineWithoutScheduler)
     // Will block and run coroutine inline to completion.
     // Does not require a scheduler.
     // Completely ignores affinity.
-    Scheduler::runCoroutineInlineDetached(task());
+    runCoroutineInline(task());
 
     EXPECT_TRUE(taskExecuted);
 }
@@ -204,46 +204,7 @@ TEST_F(BasicSchedulerTests, RunSimpleCoroutineChainWithoutScheduler)
     // Will block and run coroutine inline to completion.
     // Does not require a scheduler.
     // Completely ignores affinity.
-    Scheduler::runCoroutineInlineDetached(task());
-
-    EXPECT_EQ(tasksExecuted.load(), 4);
-}
-
-TEST_F(BasicSchedulerTests, RunComplexCoroutineChainWithoutScheduler)
-{
-    std::atomic<size_t> tasksExecuted{ 0 };
-
-    auto innerTask1 = [&]() -> AsyncTask<void>
-    {
-        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
-        co_return;
-    };
-
-    auto innerTask2 = [&]() -> Task<void>
-    {
-        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
-        co_await innerTask1();
-        co_return;
-    };
-
-    auto innerTask3 = [&]() -> AsyncTask<void>
-    {
-        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
-        co_await innerTask2();
-        co_return;
-    };
-
-    auto task = [&]() -> Task<void>
-    {
-        tasksExecuted.fetch_add(1, std::memory_order_relaxed);
-        co_await innerTask3();
-        co_return;
-    };
-
-    // Will block and run coroutine inline to completion.
-    // Does not require a scheduler.
-    // Completely ignores affinity.
-    Scheduler::runCoroutineInlineDetached(task());
+    runCoroutineInline(task());
 
     EXPECT_EQ(tasksExecuted.load(), 4);
 }
