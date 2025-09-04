@@ -159,6 +159,36 @@ TEST_F(IntervalTaskSchedulerTests, ScheduleDelayedBasic)
 // Cancellation Token Tests
 //
 
+TEST_F(IntervalTaskSchedulerTests, CancellationTokenConstruction)
+{
+    executionCount_.store(0);
+
+    // A cancellation token should be default-constructed as invalid
+    // You should then be able to overwrite it with a valid token
+    // from the scheduler
+    CancellationToken token;
+    EXPECT_FALSE(token.valid());
+
+    token = scheduler_->scheduleInterval(
+        std::chrono::milliseconds(50),
+        [this]() -> Task<void>
+        {
+            executionCount_.fetch_add(1);
+            co_return;
+        });
+    EXPECT_TRUE(token.valid());
+
+    // Let it execute once
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    scheduler_->runExpiredTasks();
+    int countAfterFirst = executionCount_.load();
+    EXPECT_GT(countAfterFirst, 0);
+
+    // Cancel the task
+    token.cancel();
+    EXPECT_FALSE(token.valid());
+}
+
 TEST_F(IntervalTaskSchedulerTests, CancellationTokenBasic)
 {
     executionCount_.store(0);
@@ -179,7 +209,7 @@ TEST_F(IntervalTaskSchedulerTests, CancellationTokenBasic)
 
     // Cancel the task
     token.cancel();
-    EXPECT_TRUE(token.isCancelled());
+    EXPECT_FALSE(token.valid());
 
     // Wait and run again - should not execute more
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

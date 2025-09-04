@@ -23,28 +23,25 @@ public:
     // Constructor & Destructor
     //
 
+    CancellationToken() = default;
     CancellationToken(IntervalTask* task, Scheduler* scheduler);
     ~CancellationToken();
 
-    CancellationToken(const CancellationToken&)            = delete;
-    CancellationToken& operator=(const CancellationToken&) = delete;
+    CancellationToken(const CancellationToken&) = delete;
     CancellationToken(CancellationToken&& other) noexcept;
-    CancellationToken& operator=(CancellationToken&&) = delete;
+    CancellationToken& operator=(CancellationToken&& other) noexcept;
+
+    // Assignment operator for overwriting tokens
+    CancellationToken& operator=(const CancellationToken& other);
 
     //
     // Cancellation Control
     //
 
-    void     cancel();
-    auto     valid() const -> bool;
-    auto     isCancelled() const -> bool;
-    explicit operator bool() const;
+    void cancel();
+    auto valid() const -> bool;
 
-    //
-    // Task Management
-    //
-
-    void setTask(IntervalTask* task);
+    // Internal method for IntervalTask
     void clearTokenPointer();
 
 private:
@@ -53,7 +50,7 @@ private:
     //
 
     IntervalTask*               task_{ nullptr };
-    [[maybe_unused]] Scheduler* scheduler_;
+    [[maybe_unused]] Scheduler* scheduler_{ nullptr };
     std::atomic<bool>           cancelled_{ false };
 };
 

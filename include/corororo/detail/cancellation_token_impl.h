@@ -45,6 +45,61 @@ inline CancellationToken::CancellationToken(CancellationToken&& other) noexcept
     }
 }
 
+inline CancellationToken& CancellationToken::operator=(CancellationToken&& other) noexcept
+{
+    if (this != &other)
+    {
+        // Clean up current task
+        if (task_)
+        {
+            task_->clearTokenPointer();
+            task_->markCancelled();
+        }
+
+        // Move from other token
+        task_      = other.task_;
+        scheduler_ = other.scheduler_;
+        cancelled_.store(other.cancelled_.load());
+
+        // Clear other token
+        other.task_      = nullptr;
+        other.scheduler_ = nullptr;
+        other.cancelled_.store(false);
+
+        // Update the task's token pointer
+        if (task_)
+        {
+            task_->setToken(this);
+        }
+    }
+    return *this;
+}
+
+inline CancellationToken& CancellationToken::operator=(const CancellationToken& other)
+{
+    if (this != &other)
+    {
+        // Clean up current task
+        if (task_)
+        {
+            task_->clearTokenPointer();
+            task_->markCancelled();
+        }
+
+        // Copy from other token
+        task_      = other.task_;
+        scheduler_ = other.scheduler_;
+        cancelled_.store(other.cancelled_.load());
+
+        // Update the task's token pointer
+        if (task_)
+        {
+            task_->setToken(this);
+        }
+    }
+    return *this;
+}
+
 inline void CancellationToken::cancel()
 {
     cancelled_.store(true);
@@ -57,21 +112,6 @@ inline void CancellationToken::cancel()
 inline auto CancellationToken::valid() const -> bool
 {
     return !cancelled_.load() && task_ != nullptr;
-}
-
-inline auto CancellationToken::isCancelled() const -> bool
-{
-    return cancelled_.load();
-}
-
-inline CancellationToken::operator bool() const
-{
-    return valid();
-}
-
-inline void CancellationToken::setTask(IntervalTask* task)
-{
-    task_ = task;
 }
 
 inline void CancellationToken::clearTokenPointer()
