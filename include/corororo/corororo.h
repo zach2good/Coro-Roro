@@ -196,6 +196,13 @@ public:
         schedule(std::move(task));
     }
 
+    // Schedule a callable that returns void (non-coroutine)
+    // Automatically wraps the callable in a coroutine for execution
+    template <typename Callable>
+    void schedule(Callable&& callable)
+        requires std::is_invocable_v<Callable> &&
+                 std::is_void_v<std::invoke_result_t<Callable>>;
+
     HOT_PATH auto runExpiredTasks() -> std::chrono::milliseconds
     {
         auto start = std::chrono::steady_clock::now();
@@ -861,6 +868,22 @@ struct Promise<Affinity, void> final : public PromiseBase<Promise<Affinity, void
 
 template <typename T = void>
 using Task = detail::TaskBase<ThreadAffinity::Main, T>;
+
+// Additional schedule method for void-returning callables
+// Automatically wraps the callable in a coroutine for execution
+template <typename Callable>
+void Scheduler::schedule(Callable&& callable)
+    requires std::is_invocable_v<Callable> &&
+             std::is_void_v<std::invoke_result_t<Callable>>
+{
+    // Wrap the void-returning callable in a coroutine
+    auto wrappedTask = [callable = std::forward<Callable>(callable)]() -> Task<void>
+    {
+        callable();
+        co_return;
+    };
+    schedule(wrappedTask);
+}
 
 //
 // IntervalTask

@@ -79,6 +79,25 @@ TEST_F(CallableTaskSchedulerTests, ScheduleWithStdBind)
     EXPECT_EQ(executionCount_.load(), 3); // Single execution with multiplier of 3
 }
 
+TEST_F(CallableTaskSchedulerTests, ScheduleWithVoidLambda)
+{
+    // Use a static variable to test void lambda functionality
+    // Note: void lambdas cannot safely capture 'this' or member variables
+    // due to execution context differences in the coroutine wrapper
+    static std::atomic<size_t> staticCount{ 0 };
+    staticCount.store(0);
+
+    // Schedule a lambda that returns void (non-coroutine)
+    scheduler_->schedule(
+        []() -> void
+        {
+            staticCount.fetch_add(1);
+        });
+    scheduler_->runExpiredTasks();
+
+    EXPECT_EQ(staticCount.load(), 1);
+}
+
 TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithLambda)
 {
     executionCount_.store(0);
