@@ -28,7 +28,7 @@ struct PromiseBase
 {
     Scheduler*          scheduler_{ nullptr };
     ContinuationVariant continuation_{};
-    bool                isIntervalTask_{ false };
+    std::exception_ptr  unhandledException_{ nullptr };
 
     static constexpr ThreadAffinity affinity = Affinity;
 
@@ -49,18 +49,10 @@ struct PromiseBase
         return FinalAwaiter<Affinity, PromiseBase>{ this };
     }
 
-    COLD_PATH void unhandled_exception() noexcept
+    COLD_PATH void unhandled_exception()
     {
-        coro_log("!!! Unhandled exception !!!");
-        if (isIntervalTask_)
-        {
-            coro_log("Exception in interval task - continuing execution");
-        }
-        else
-        {
-            coro_log("Exception in regular task - terminating");
-            std::terminate();
-        }
+        // Store the exception for later propagation
+        unhandledException_ = std::current_exception();
     }
 
     //
@@ -119,8 +111,15 @@ struct PromiseBase
                 return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, handle_);
             }
 
-            FORCE_INLINE auto await_resume() const noexcept
+            FORCE_INLINE auto await_resume() const
             {
+                // Check if the child coroutine had an unhandled exception
+                if (handle_.promise().unhandledException_)
+                {
+                    // Re-throw the exception to propagate it up the chain
+                    std::rethrow_exception(handle_.promise().unhandledException_);
+                }
+
                 if constexpr (!std::is_void_v<NextT>)
                 {
                     return handle_.promise().result();

@@ -105,7 +105,6 @@ public:
             }
     }
 
-
     // Schedule a callable that returns a Task/AsyncTask
     // Supports lambdas, std::bind, function objects, etc.
     template <typename Callable>
@@ -117,7 +116,6 @@ public:
         auto task = std::forward<Callable>(callable)();
         schedule(std::move(task));
     }
-
 
     // Schedule a callable that returns void (non-coroutine)
     // Automatically wraps the callable in a coroutine for execution
@@ -163,7 +161,6 @@ public:
         const auto end = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     }
-
 
     //
     // Basic Task Scheduling API
@@ -229,7 +226,7 @@ public:
             return getNextWorkerThreadTask();
         }
     }
-    
+
 private:
     void workerLoop()
     {

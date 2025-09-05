@@ -61,6 +61,13 @@ struct FinalAwaiter final
                 if constexpr (std::is_same_v<TContinuation, std::monostate>)
                 {
                     // This was a top-level task. It has finished.
+                    if (promise_->unhandledException_)
+                    {
+                        // Always re-throw exceptions for natural propagation
+                        // runExpiredTasks() should propagate exceptions regardless of task origin
+                        std::rethrow_exception(promise_->unhandledException_);
+                    }
+
                     if (promise_->scheduler_)
                     {
                         promise_->scheduler_->notifyTaskComplete();
