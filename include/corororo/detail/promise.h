@@ -50,6 +50,12 @@ struct PromiseBase
         return FinalAwaiter<Affinity, PromiseBase>{ this };
     }
 
+    COLD_PATH void unhandled_exception()
+    {
+        // This should never be called - derived classes should override this
+        std::terminate();
+    }
+
 
     //
     // await_transform
@@ -121,6 +127,11 @@ struct PromiseBase
                 {
                     return handle_.promise().result();
                 }
+                else
+                {
+                    // For void tasks, still call result() to check for exceptions
+                    handle_.promise().result();
+                }
             }
         };
         return TransferAwaiter{ scheduler_, std::move(nextTask) };
@@ -154,16 +165,25 @@ struct Promise final : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 
     FORCE_INLINE void unhandled_exception()
     {
+        // Store the exception for later propagation
         result_ = std::current_exception();
     }
 
-    FORCE_INLINE auto result() noexcept -> T&
+    FORCE_INLINE auto result() -> T&
     {
+        if (std::holds_alternative<std::exception_ptr>(result_))
+        {
+            std::rethrow_exception(std::get<std::exception_ptr>(result_));
+        }
         return std::get<T>(result_);
     }
 
-    FORCE_INLINE auto result() const noexcept -> const T&
+    FORCE_INLINE auto result() const -> const T&
     {
+        if (std::holds_alternative<std::exception_ptr>(result_))
+        {
+            std::rethrow_exception(std::get<std::exception_ptr>(result_));
+        }
         return std::get<T>(result_);
     }
 };
@@ -184,7 +204,16 @@ struct Promise<Affinity, void> final : public PromiseBase<Promise<Affinity, void
 
     FORCE_INLINE void unhandled_exception()
     {
+        // Store the exception for later propagation
         result_ = std::current_exception();
+    }
+
+    FORCE_INLINE void result()
+    {
+        if (std::holds_alternative<std::exception_ptr>(result_))
+        {
+            std::rethrow_exception(std::get<std::exception_ptr>(result_));
+        }
     }
 };
 

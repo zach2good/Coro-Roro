@@ -67,7 +67,7 @@ struct FinalAwaiter final
                     if (std::holds_alternative<std::exception_ptr>(derivedPromise->result_))
                     {
                         // Always re-throw exceptions for natural propagation
-                        // runExpiredTasks() should propagate exceptions regardless of task origin
+                        // The scheduler will catch and handle them appropriately
                         std::rethrow_exception(std::get<std::exception_ptr>(derivedPromise->result_));
                     }
 

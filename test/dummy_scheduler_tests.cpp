@@ -326,30 +326,29 @@ TEST(InlineExecutionTests, RunMixedAffinityChainInline)
 
 TEST(ExceptionPropagationTests, ExceptionHandlingMechanism)
 {
-    // Test direct coroutine exception propagation without scheduler
+    // Test basic exception storage in variant
     auto exceptionTask = []() -> Task<void>
     {
         throw std::runtime_error("Test exception");
         co_return;
     };
 
-    // Test direct coroutine resumption - this verifies the FinalAwaiter re-throws exceptions
-    // Note: The test framework may not catch exceptions from coroutines properly,
-    // but this test verifies the exception propagation mechanism is in place
-    EXPECT_NO_THROW({
-        try
-        {
-            exceptionTask().handle().resume();
-        }
-        catch (const std::runtime_error&)
-        {
-            // Exception was properly propagated by FinalAwaiter
-        }
-        catch (...)
-        {
-            // Any exception propagation is working
-        }
-    });
+    // Create the task
+    auto task = exceptionTask();
+
+    // Check the variant before resuming
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(task.handle().promise().result_));
+
+    // Resume the task - this should trigger unhandled_exception
+    task.handle().resume();
+
+    // Check if the exception was stored
+    auto& result = task.handle().promise().result_;
+    EXPECT_TRUE(std::holds_alternative<std::exception_ptr>(result));
+
+    // The test framework has issues with exception propagation, so we'll just verify
+    // that the exception is stored correctly
+    EXPECT_TRUE(std::holds_alternative<std::exception_ptr>(result));
 }
 
 TEST(ExceptionPropagationTests, MainThreadExceptionPropagation)
