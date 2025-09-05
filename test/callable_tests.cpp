@@ -35,7 +35,7 @@ TEST_F(CallableTaskSchedulerTests, ScheduleWithLambda)
     executionCount_.store(0);
 
     scheduler_->schedule(
-        [this]() -> Task<void>
+        []() -> Task<void>
         {
             executionCount_.fetch_add(1);
             co_return;
@@ -49,7 +49,7 @@ TEST_F(CallableTaskSchedulerTests, ScheduleWithDirectLambda)
 {
     executionCount_.store(0);
 
-    auto taskLambda = [this]() -> Task<void>
+    auto taskLambda = []() -> Task<void>
     {
         executionCount_.fetch_add(1);
         co_return;
@@ -108,7 +108,7 @@ TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithLambda)
     // Schedule interval task with lambda
     auto token = scheduler_->scheduleInterval(
         std::chrono::milliseconds(50),
-        [this]() -> Task<void>
+        []() -> Task<void>
         {
             executionCount_.fetch_add(1);
             co_return;
@@ -131,7 +131,7 @@ TEST_F(CallableTaskSchedulerTests, ScheduleIntervalWithDirectLambda)
     executionCount_.store(0);
 
     // Create a lambda that returns a Task (not immediately invoked)
-    auto taskLambda = [this]() -> Task<void>
+    auto taskLambda = []() -> Task<void>
     {
         executionCount_.fetch_add(1);
         co_return;
@@ -190,7 +190,7 @@ TEST_F(CallableTaskSchedulerTests, ScheduleDelayedWithFunctionObject)
 
     auto token = scheduler_->scheduleDelayed(
         std::chrono::milliseconds(50),
-        [this]() -> Task<void>
+        []() -> Task<void>
         {
             executionCount_.fetch_add(1);
             co_return;

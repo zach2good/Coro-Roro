@@ -142,7 +142,7 @@ TEST_F(IntervalTaskSchedulerTests, ScheduleDelayedBasic)
 
     auto token = scheduler_->scheduleDelayed(
         std::chrono::milliseconds(100),
-        [this]() -> Task<void>
+        []() -> Task<void>
         {
             executed_.store(true);
             co_return;
@@ -167,7 +167,7 @@ TEST_F(IntervalTaskSchedulerTests, ScheduleAtBasic)
 
     auto token = scheduler_->scheduleAt(
         executionTime,
-        [this]() -> Task<void>
+        []() -> Task<void>
         {
             executed_.store(true);
             co_return;

@@ -32,10 +32,10 @@
 #include "detail/scheduler.h"
 #include "detail/task_aliases.h"
 #include "detail/scheduler_extensions.h"
+#include "detail/scheduler_concept.h"
 #include "detail/transfer_policy_impl.h"
 #include "detail/interval_task_impl.h"
 #include "detail/cancellation_token_impl.h"
-#include "detail/utils.h"
 // clang-format on
 
 namespace CoroRoro
@@ -49,6 +49,6 @@ using detail::ContinuationVariant;
 using detail::TransferPolicy;
 
 // Bring utility functions into main namespace for convenience
-using detail::runCoroutineInline;
+using detail::runTaskInline;
 
 } // namespace CoroRoro
