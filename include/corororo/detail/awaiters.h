@@ -61,11 +61,14 @@ struct FinalAwaiter final
                 if constexpr (std::is_same_v<TContinuation, std::monostate>)
                 {
                     // This was a top-level task. It has finished.
-                    if (promise_->unhandledException_)
+                    // Check if the coroutine completed with an exception
+                    // Cast to derived promise type to access result_
+                    auto* derivedPromise = static_cast<typename Promise::DerivedPromise*>(promise_);
+                    if (std::holds_alternative<std::exception_ptr>(derivedPromise->result_))
                     {
                         // Always re-throw exceptions for natural propagation
                         // runExpiredTasks() should propagate exceptions regardless of task origin
-                        std::rethrow_exception(promise_->unhandledException_);
+                        std::rethrow_exception(std::get<std::exception_ptr>(derivedPromise->result_));
                     }
 
                     if (promise_->scheduler_)
