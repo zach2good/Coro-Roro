@@ -61,12 +61,20 @@ struct FinalAwaiter final
                 if constexpr (std::is_same_v<TContinuation, std::monostate>)
                 {
                     // This was a top-level task. It has finished.
-                    promise_->scheduler_->notifyTaskComplete();
+                    if (promise_->scheduler_)
+                    {
+                        promise_->scheduler_->notifyTaskComplete();
 
-                    // Symmetric Transfer on Task Completion:
-                    // No continuation exists (a top-level task). Ask the scheduler for the next
-                    // available task for this thread to execute immediately.
-                    return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
+                        // Symmetric Transfer on Task Completion:
+                        // No continuation exists (a top-level task). Ask the scheduler for the next
+                        // available task for this thread to execute immediately.
+                        return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
+                    }
+                    else
+                    {
+                        // Inline execution - no external scheduler
+                        return std::noop_coroutine();
+                    }
                 }
                 else
                 {

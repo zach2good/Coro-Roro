@@ -21,5 +21,4 @@
 
 #define NO_DISCARD [[nodiscard]]
 
-// TODO
 #define ASSERT_UNREACHABLE() std::abort()

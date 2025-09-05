@@ -49,8 +49,7 @@ inline auto IntervalTask::createTrackedTask() -> std::optional<CoroRoro::detail:
     // Mark this as an interval task for exception handling
     task.handle().promise().isIntervalTask_ = true;
 
-    // For now, just return the task directly without wrapping
-    // TODO: Add proper tracking
+    // Return the task directly
     return task;
 }
 

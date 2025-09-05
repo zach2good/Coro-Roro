@@ -24,22 +24,19 @@ TEST(DummySchedulerTests, ScheduleWithDummyScheduler)
         co_return;
     };
 
-    // Use the regular schedule method (not the deprecated generic one)
     realScheduler.schedule(task);
 }
 
-TEST(DummySchedulerTests, ScheduleTaskWithDummyScheduler)
+TEST(DummySchedulerTests, ScheduleTaskObject)
 {
     Scheduler realScheduler;
 
-    // Create a task
+    // Create and schedule a task object directly
     auto task = []() -> Task<void> {
         co_return;
     };
 
-    // Schedule the task with the real scheduler
-    auto taskObj = task();
-    realScheduler.schedule(std::move(taskObj));
+    realScheduler.schedule(task());
 }
 
 // Example of a custom scheduler that satisfies the concept
