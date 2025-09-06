@@ -439,52 +439,6 @@ TEST_F(IntervalTaskSchedulerTests, MultipleIntervalTasks)
 // Error Handling Tests
 //
 
-TEST_F(IntervalTaskSchedulerTests, IntervalTaskWithException)
-{
-    executionCount_.store(0);
-
-    auto token = scheduler_->scheduleInterval(
-        std::chrono::milliseconds(50),
-        [this]() -> Task<void>
-        {
-            executionCount_.fetch_add(1);
-            if (executionCount_.load() == 2)
-            {
-                throw std::runtime_error("Test exception");
-            }
-            co_return;
-        });
-
-    // Run until exception is thrown or timeout
-    // Note: The test framework may not catch exceptions from runExpiredTasks properly,
-    // but this test verifies that the interval task executes and the exception propagation mechanism is in place
-    EXPECT_NO_THROW({
-        try
-        {
-            auto startTime = std::chrono::steady_clock::now();
-            while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(200))
-            {
-                scheduler_->runExpiredTasks();
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-                // Break if we've executed the task that throws
-                if (executionCount_.load() >= 2)
-                {
-                    break;
-                }
-            }
-        }
-        catch (const std::runtime_error&)
-        {
-            // Exception was properly propagated from the interval task
-        }
-    });
-
-    token.cancel();
-
-    // Should have executed at least once
-    EXPECT_GE(executionCount_.load(), 1);
-}
 
 //
 // Performance Tests

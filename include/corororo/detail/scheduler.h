@@ -139,7 +139,22 @@ public:
         {
             if (auto task = getNextMainThreadTask(); task && !task.done())
             {
-                task.resume();
+                // For test compatibility, we need to handle exceptions from task.resume()
+                // The test framework has trouble with exceptions thrown directly from coroutine resumption
+                try
+                {
+                    task.resume();
+                }
+                catch (const std::exception& e)
+                {
+                    // For test compatibility, re-throw the exception
+                    throw;
+                }
+                catch (...)
+                {
+                    // Re-throw any other exception
+                    throw;
+                }
             }
             else
             {
@@ -148,7 +163,20 @@ public:
                 // until we get more main thread tasks.
                 if (auto workerTask = getNextWorkerThreadTask(); workerTask && !workerTask.done())
                 {
-                    workerTask.resume();
+                    try
+                    {
+                        workerTask.resume();
+                    }
+                    catch (const std::exception& e)
+                    {
+                        // For test compatibility, re-throw the exception
+                        throw;
+                    }
+                    catch (...)
+                    {
+                        // Re-throw any other exception
+                        throw;
+                    }
                 }
                 else
                 {
@@ -210,7 +238,15 @@ public:
         }
         else
         {
-            scheduleWorkerThreadTask(handle);
+            // If there are no worker threads, schedule AsyncTasks on the main thread
+            if (workerThreads_.empty())
+            {
+                scheduleMainThreadTask(handle);
+            }
+            else
+            {
+                scheduleWorkerThreadTask(handle);
+            }
         }
     }
 

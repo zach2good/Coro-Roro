@@ -3,8 +3,9 @@
 #include "enums.h"
 #include "macros.h"
 
-#include <coroutine>
+#include <chrono>
 #include <concepts>
+#include <coroutine>
 #include <variant>
 
 namespace CoroRoro
@@ -21,8 +22,7 @@ namespace detail
 //
 
 template <typename T>
-concept SchedulerLike = requires(T& scheduler, std::coroutine_handle<> handle, ThreadAffinity affinity)
-{
+concept SchedulerLike = requires(T& scheduler, std::coroutine_handle<> handle, ThreadAffinity affinity) {
     // Must be able to notify when a task completes
     { scheduler.notifyTaskComplete() } -> std::same_as<void>;
 
@@ -64,14 +64,16 @@ public:
     {
         return std::noop_coroutine();
     }
-
 };
 
-// =====================================================================================
-// INLINE SCHEDULER - SIMPLIFIED
-// =====================================================================================
+static_assert(SchedulerLike<ConceptDummyScheduler>, "ConceptDummyScheduler does not satisfy SchedulerLike concept");
+
+//
+// Inline Scheduler
+//
 // A special scheduler that forces all execution to happen on the main thread
 // with no queues. Perfect for inline execution of tasks from start to finish.
+//
 
 class InlineScheduler
 {
@@ -100,7 +102,7 @@ public:
     auto getNextTaskWithAffinity() noexcept -> std::coroutine_handle<>
     {
         // Return and clear the scheduled task
-        auto task = scheduledTask_;
+        auto task      = scheduledTask_;
         scheduledTask_ = nullptr;
         return task ? task : std::noop_coroutine();
     }
@@ -116,13 +118,48 @@ public:
     {
         if (scheduledTask_ && !scheduledTask_.done())
         {
-            auto task = scheduledTask_;
+            auto task      = scheduledTask_;
             scheduledTask_ = nullptr;
             task.resume();
         }
     }
+
+    // Schedule a task for inline execution
+    template <ThreadAffinity Affinity, typename T>
+    void schedule(detail::TaskBase<Affinity, T>&& task)
+    {
+        auto handle  = task.handle_;
+        task.handle_ = nullptr; // Prevent destruction
+        if (handle && !handle.done())
+        {
+            scheduledTask_ = handle;
+        }
+    }
+
+    // Run expired tasks (for InlineScheduler, this just executes the scheduled task)
+    auto runExpiredTasks() -> std::chrono::milliseconds
+    {
+        auto start = std::chrono::steady_clock::now();
+
+        if (scheduledTask_ && !scheduledTask_.done())
+        {
+            auto task      = scheduledTask_;
+            scheduledTask_ = nullptr;
+            task.resume();
+
+            // Clean up the coroutine handle
+            if (task)
+            {
+                task.destroy();
+            }
+        }
+
+        auto end = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    }
 };
 
+static_assert(SchedulerLike<InlineScheduler>, "InlineScheduler does not satisfy SchedulerLike concept");
 
 } // namespace detail
 } // namespace CoroRoro

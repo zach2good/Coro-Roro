@@ -71,20 +71,12 @@ struct FinalAwaiter final
                         std::rethrow_exception(std::get<std::exception_ptr>(derivedPromise->result_));
                     }
 
-                    if (promise_->scheduler_)
-                    {
-                        promise_->scheduler_->notifyTaskComplete();
+                    promise_->scheduler_->notifyTaskComplete();
 
-                        // Symmetric Transfer on Task Completion:
-                        // No continuation exists (a top-level task). Ask the scheduler for the next
-                        // available task for this thread to execute immediately.
-                        return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
-                    }
-                    else
-                    {
-                        // Inline execution - no external scheduler
-                        return std::noop_coroutine();
-                    }
+                    // Symmetric Transfer on Task Completion:
+                    // No continuation exists (a top-level task). Ask the scheduler for the next
+                    // available task for the thread to execute immediately.
+                    return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
                 }
                 else
                 {
