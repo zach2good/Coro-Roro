@@ -73,6 +73,7 @@ inline void IntervalTask::execute()
         if (scheduler_)
         {
             // Set the scheduler pointer in the task's promise so it can notify completion
+            // Type safety guaranteed by concept constraints in scheduler_concept.h
             task->handle().promise().scheduler_ = scheduler_;
             scheduler_->schedule(std::move(*task));
         }

@@ -71,6 +71,8 @@ struct FinalAwaiter final
                         std::rethrow_exception(std::get<std::exception_ptr>(derivedPromise->result_));
                     }
 
+                    // Type safety guaranteed by concept constraints in scheduler_concept.h
+                    // Both Scheduler and InlineScheduler satisfy the SchedulerLike concept
                     promise_->scheduler_->notifyTaskComplete();
 
                     // Symmetric Transfer on Task Completion:

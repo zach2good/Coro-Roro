@@ -434,15 +434,6 @@ TEST_F(IntervalTaskSchedulerTests, MultipleIntervalTasks)
     EXPECT_GE(task1Count_.load() + task2Count_.load(), 2); // At least one task should execute multiple times
 }
 
-//
-// Error Handling Tests
-//
-
-
-//
-// Performance Tests
-//
-
 TEST_F(IntervalTaskSchedulerTests, HighFrequencyIntervalTasks)
 {
     executionCount_.store(0);

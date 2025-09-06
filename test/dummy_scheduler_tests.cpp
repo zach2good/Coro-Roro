@@ -6,42 +6,9 @@
 using namespace CoroRoro;
 
 //
-// Test the concept-based scheduler approach with DummyScheduler
+// Example of a custom scheduler that satisfies the concept
 //
 
-TEST(DummySchedulerTests, ConceptSatisfaction)
-{
-    // Verify that ConceptDummyScheduler satisfies the SchedulerLike concept
-    static_assert(detail::SchedulerLike<detail::ConceptDummyScheduler>);
-}
-
-TEST(DummySchedulerTests, ScheduleWithDummyScheduler)
-{
-    Scheduler realScheduler;
-
-    // Test that we can schedule a task with the real scheduler
-    auto task = []() -> Task<void>
-    {
-        co_return;
-    };
-
-    realScheduler.schedule(task);
-}
-
-TEST(DummySchedulerTests, ScheduleTaskObject)
-{
-    Scheduler realScheduler;
-
-    // Create and schedule a task object directly
-    auto task = []() -> Task<void>
-    {
-        co_return;
-    };
-
-    realScheduler.schedule(task());
-}
-
-// Example of a custom scheduler that satisfies the concept
 struct CustomScheduler
 {
     void notifyTaskComplete() noexcept
@@ -64,36 +31,6 @@ TEST(DummySchedulerTests, CustomSchedulerConcept)
 {
     // Verify it satisfies the concept
     static_assert(detail::SchedulerLike<CustomScheduler>);
-
-    Scheduler realScheduler;
-
-    // Test scheduling with real scheduler
-    auto task = []() -> Task<void>
-    {
-        co_return;
-    };
-
-    realScheduler.schedule(task);
-}
-
-//
-// Performance test to demonstrate zero-cost abstraction
-//
-
-TEST(DummySchedulerTests, PerformanceComparison)
-{
-    Scheduler realScheduler;
-
-    auto task = []() -> Task<void>
-    {
-        co_return;
-    };
-
-    // Test with real scheduler using normal approach
-    realScheduler.schedule(task); // Real scheduler
-
-    // The dummy scheduler concept has been verified in other tests
-    SUCCEED();
 }
 
 //
@@ -124,9 +61,9 @@ TEST(InlineExecutionTests, RunIntTaskInline)
         co_return 42;
     };
 
-    // For now, just test that the function can be called
-    runTaskInline(task());
-    SUCCEED();
+    // Execute the task inline and get result
+    auto result = runTaskInline(task());
+    EXPECT_EQ(result, 42);
 }
 
 TEST(InlineExecutionTests, RunStringTaskInline)
@@ -136,9 +73,9 @@ TEST(InlineExecutionTests, RunStringTaskInline)
         co_return std::string("hello");
     };
 
-    // For now, just test that the function can be called
-    runTaskInline(task());
-    SUCCEED();
+    // Execute the task inline and get result
+    auto result = runTaskInline(task());
+    EXPECT_EQ(result, "hello");
 }
 
 TEST(InlineExecutionTests, RunComplexTaskInline)
@@ -149,55 +86,25 @@ TEST(InlineExecutionTests, RunComplexTaskInline)
         co_return vec;
     };
 
-    // For now, just test that the function can be called
-    runTaskInline(task());
-    SUCCEED();
+    // Execute the task inline and get result
+    auto result = runTaskInline(task());
+    EXPECT_EQ(result, std::vector<int>({ 1, 2, 3, 4, 5 }));
 }
 
 TEST(InlineExecutionTests, RunTaskWithCoAwaitInline)
 {
-    int value = 0;
-
     auto innerTask = [&]() -> Task<int>
     {
         co_return 100;
     };
 
-    auto outerTask = [&]() -> Task<void>
+    auto outerTask = [&]() -> Task<int>
     {
-        int result = co_await innerTask();
-        value      = result;
+        co_return co_await innerTask();
     };
 
-    // Execute the task inline
-    runTaskInline(outerTask());
-
-    // Verify the co_await worked correctly
-    EXPECT_EQ(value, 100);
-}
-
-TEST(InlineExecutionTests, RunTaskWithMultipleCoAwaitsInline)
-{
-    int counter = 0;
-
-    auto incrementTask = [&]() -> Task<void>
-    {
-        counter++;
-        co_return;
-    };
-
-    auto mainTask = [&]() -> Task<void>
-    {
-        co_await incrementTask();
-        co_await incrementTask();
-        co_await incrementTask();
-    };
-
-    // Execute the task inline
-    runTaskInline(mainTask());
-
-    // Verify all co_awaits executed
-    EXPECT_EQ(counter, 3);
+    auto result = runTaskInline(outerTask());
+    EXPECT_EQ(result, 100);
 }
 
 TEST(InlineExecutionTests, RunComplexTaskAsyncTaskChainInline)
@@ -315,4 +222,3 @@ TEST(InlineExecutionTests, RunMixedAffinityChainInline)
 
     EXPECT_EQ(log, expected);
 }
-

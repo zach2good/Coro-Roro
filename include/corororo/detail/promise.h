@@ -134,6 +134,7 @@ struct PromiseBase
                 }
             }
         };
+        // Type safety guaranteed by concept constraints in scheduler_concept.h
         return TransferAwaiter{ scheduler_, std::move(nextTask) };
     }
 

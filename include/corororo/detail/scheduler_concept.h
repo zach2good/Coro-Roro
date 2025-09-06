@@ -77,12 +77,6 @@ static_assert(SchedulerLike<ConceptDummyScheduler>, "ConceptDummyScheduler does 
 
 class InlineScheduler
 {
-private:
-    // Store the most recently scheduled task for inline execution
-    std::coroutine_handle<> scheduledTask_ = nullptr;
-    // Store the currently executing task for inline resumption
-    std::coroutine_handle<> executingTask_ = nullptr;
-
 public:
     void notifyTaskComplete() noexcept
     {
@@ -149,8 +143,9 @@ public:
         {
             // Set the scheduler on the promise for proper task coordination
             handle.promise().scheduler_ = reinterpret_cast<Scheduler*>(this);
-            scheduledTask_ = handle;
-            executingTask_ = handle;
+            scheduledTask_              = handle;
+            executingTask_              = handle;
+            lastExecutedTask_           = handle;
         }
     }
 
@@ -159,24 +154,63 @@ public:
     {
         auto start = std::chrono::steady_clock::now();
 
-        if (scheduledTask_ && !scheduledTask_.done())
+        // Keep executing tasks until there are no more to execute
+        while (true)
         {
-            auto task = scheduledTask_;
-            scheduledTask_ = nullptr;
-            executingTask_ = task;
-            task.resume();
+            std::coroutine_handle<> task = nullptr;
 
-            // If the task is done, clean it up
-            if (task.done())
+            // Get the next task to execute
+            if (executingTask_ && !executingTask_.done())
             {
-                executingTask_ = nullptr;
-                task.destroy();
+                task = executingTask_;
+            }
+            else if (scheduledTask_ && !scheduledTask_.done())
+            {
+                task           = scheduledTask_;
+                scheduledTask_ = nullptr;
+                executingTask_ = task;
+            }
+            else
+            {
+                // No more tasks to execute
+                break;
+            }
+
+            // Execute the task
+            if (task)
+            {
+                task.resume();
+
+                // If the task is now done, clear the executing task
+                if (task.done())
+                {
+                    executingTask_ = nullptr;
+                }
             }
         }
 
         auto end = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     }
+
+    // Get the last executed task for result extraction
+    template <typename T>
+    auto getLastExecutedTask() -> std::coroutine_handle<detail::Promise<ThreadAffinity::Main, T>>
+    {
+        if (lastExecutedTask_)
+        {
+            return std::coroutine_handle<detail::Promise<ThreadAffinity::Main, T>>::from_address(lastExecutedTask_.address());
+        }
+        return nullptr;
+    }
+
+private:
+    // Store the most recently scheduled task for inline execution
+    std::coroutine_handle<> scheduledTask_ = nullptr;
+    // Store the currently executing task for inline resumption
+    std::coroutine_handle<> executingTask_ = nullptr;
+    // Store the last executed task for result extraction
+    std::coroutine_handle<> lastExecutedTask_ = nullptr;
 };
 
 static_assert(SchedulerLike<InlineScheduler>, "InlineScheduler does not satisfy SchedulerLike concept");
