@@ -102,14 +102,19 @@ TEST(DummySchedulerTests, PerformanceComparison)
 
 TEST(InlineExecutionTests, RunVoidTaskInline)
 {
-    auto task = []() -> Task<void>
+    bool executed = false;
+
+    auto task = [&]() -> Task<void>
     {
+        executed = true;
         co_return;
     };
 
+    // Execute the task inline
     runTaskInline(task());
 
-    SUCCEED();
+    // Verify the task was executed
+    EXPECT_TRUE(executed);
 }
 
 TEST(InlineExecutionTests, RunIntTaskInline)

@@ -17,8 +17,6 @@ namespace detail
 // Inline Task Execution
 //
 
-// Unified runTaskInline function that handles both Task<T> and AsyncTask<T>
-// Uses if constexpr to handle different return types and affinities
 template <typename T, ThreadAffinity Affinity>
 inline void runTaskInline(detail::TaskBase<Affinity, T>&& task)
 {

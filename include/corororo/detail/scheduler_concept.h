@@ -80,6 +80,8 @@ class InlineScheduler
 private:
     // Store the most recently scheduled task for inline execution
     std::coroutine_handle<> scheduledTask_ = nullptr;
+    // Store the currently executing task for inline resumption
+    std::coroutine_handle<> executingTask_ = nullptr;
 
 public:
     void notifyTaskComplete() noexcept
@@ -95,16 +97,29 @@ public:
         if (handle && !handle.done())
         {
             scheduledTask_ = handle;
+            executingTask_ = handle;
         }
     }
 
     template <ThreadAffinity Affinity>
     auto getNextTaskWithAffinity() noexcept -> std::coroutine_handle<>
     {
-        // Return and clear the scheduled task
+        // For inline execution, if we have an executing task that's not done, return it
+        if (executingTask_ && !executingTask_.done())
+        {
+            return executingTask_;
+        }
+
+        // Otherwise, return and clear the scheduled task
         auto task      = scheduledTask_;
         scheduledTask_ = nullptr;
-        return task ? task : std::noop_coroutine();
+        if (task && !task.done())
+        {
+            executingTask_ = task;
+            return task;
+        }
+
+        return std::noop_coroutine();
     }
 
     // Check if there's a task waiting to be executed
@@ -132,24 +147,29 @@ public:
         task.handle_ = nullptr; // Prevent destruction
         if (handle && !handle.done())
         {
+            // Set the scheduler on the promise for proper task coordination
+            handle.promise().scheduler_ = reinterpret_cast<Scheduler*>(this);
             scheduledTask_ = handle;
+            executingTask_ = handle;
         }
     }
 
-    // Run expired tasks (for InlineScheduler, this just executes the scheduled task)
+    // Run expired tasks (for InlineScheduler, execute the scheduled task)
     auto runExpiredTasks() -> std::chrono::milliseconds
     {
         auto start = std::chrono::steady_clock::now();
 
         if (scheduledTask_ && !scheduledTask_.done())
         {
-            auto task      = scheduledTask_;
+            auto task = scheduledTask_;
             scheduledTask_ = nullptr;
+            executingTask_ = task;
             task.resume();
 
-            // Clean up the coroutine handle
-            if (task)
+            // If the task is done, clean it up
+            if (task.done())
             {
+                executingTask_ = nullptr;
                 task.destroy();
             }
         }
