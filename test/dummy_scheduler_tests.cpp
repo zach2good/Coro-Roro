@@ -54,6 +54,23 @@ TEST(InlineExecutionTests, RunVoidTaskInline)
     EXPECT_TRUE(executed);
 }
 
+TEST(InlineExecutionTests, RunVoidAsyncTaskInline)
+{
+    bool executed = false;
+
+    auto task = [&]() -> AsyncTask<void>
+    {
+        executed = true;
+        co_return;
+    };
+
+    // Execute the task inline
+    runTaskInline(task());
+
+    // Verify the task was executed
+    EXPECT_TRUE(executed);
+}
+
 TEST(InlineExecutionTests, RunIntTaskInline)
 {
     auto task = []() -> Task<int>

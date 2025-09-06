@@ -145,7 +145,7 @@ public:
                 {
                     task.resume();
                 }
-                catch (const std::exception& e)
+                catch (const std::exception&)
                 {
                     // For test compatibility, re-throw the exception
                     throw;
@@ -167,7 +167,7 @@ public:
                     {
                         workerTask.resume();
                     }
-                    catch (const std::exception& e)
+                    catch (const std::exception&)
                     {
                         // For test compatibility, re-throw the exception
                         throw;

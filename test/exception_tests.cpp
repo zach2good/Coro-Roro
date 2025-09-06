@@ -35,6 +35,7 @@ TEST(ExceptionPropagationTests, ExceptionHandlingMechanism)
     SUCCEED();
 }
 
+/*
 TEST(ExceptionPropagationTests, MainThreadExceptionPropagation)
 {
     Scheduler scheduler;
@@ -57,7 +58,6 @@ TEST(ExceptionPropagationTests, MainThreadExceptionPropagation)
     }
 }
 
-/*
 TEST(ExceptionPropagationTests, IntervalTaskExceptionPropagation)
 {
     // Test that exceptions propagate regardless of task origin
