@@ -405,10 +405,12 @@ private:
 // Implementation of processExpiredIntervalTasks moved here to avoid incomplete type issues
 inline void Scheduler::processExpiredIntervalTasks()
 {
-    auto now = std::chrono::steady_clock::now();
-
     {
         std::lock_guard<std::mutex> lock(timerMutex_);
+
+        // Collect all expired tasks first
+        std::vector<std::unique_ptr<IntervalTask>> expiredTasks;
+        auto now = std::chrono::steady_clock::now();
 
         while (!intervalQueue_.empty())
         {
@@ -419,11 +421,14 @@ inline void Scheduler::processExpiredIntervalTasks()
                 break; // No more expired tasks
             }
 
-            // Remove from priority queue temporarily
-            auto task = std::move(const_cast<std::unique_ptr<IntervalTask>&>(intervalQueue_.top()));
+            // Move expired task out of queue
+            expiredTasks.push_back(std::move(const_cast<std::unique_ptr<IntervalTask>&>(intervalQueue_.top())));
             intervalQueue_.pop();
+        }
 
-            // Execute the task
+        // Execute all expired tasks
+        for (auto& task : expiredTasks)
+        {
             task->execute();
 
             // If it's not a one-time task and not cancelled, reschedule it

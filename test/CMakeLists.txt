@@ -25,8 +25,6 @@ if(MSVC)
     endif()
 endif()
 
-CPMAddPackage("gh:gabime/spdlog@1.15.3")
-
 CPMAddPackage(
   NAME googletest
   GITHUB_REPOSITORY google/googletest
@@ -52,4 +50,20 @@ if(MSVC)
     target_compile_options(corororo_tests PRIVATE /W4 /WX /permissive-)
 else()
     target_compile_options(corororo_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+#
+# Tracy Testing
+#
+
+add_executable(tracy_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tracy_test.cpp
+)
+
+target_link_libraries(tracy_test PRIVATE Coro-Roro TracyClient)
+
+if(MSVC)
+    target_compile_options(tracy_test PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(tracy_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()

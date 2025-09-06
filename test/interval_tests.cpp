@@ -429,10 +429,86 @@ TEST_F(IntervalTaskSchedulerTests, MultipleIntervalTasks)
     token1.cancel();
     token2.cancel();
 
-    // Note: Due to a known issue with factory function sharing in the scheduler,
-    // only one task executes. This is a limitation of the current implementation.
-    // TODO: Fix factory function sharing issue in scheduler
-    EXPECT_GE(task1Count_.load() + task2Count_.load(), 2); // At least one task should execute multiple times
+    // Both tasks should have executed multiple times
+    // Task 1 (100ms interval): ~3 executions in 300ms
+    // Task 2 (150ms interval): ~2 executions in 300ms
+    EXPECT_GE(task1Count_.load(), 2);
+    EXPECT_GE(task2Count_.load(), 1);
+    EXPECT_GE(task1Count_.load() + task2Count_.load(), 4);
+}
+
+TEST_F(IntervalTaskSchedulerTests, MultipleIntervalTasksDifferentIntervals)
+{
+    task1Count_.store(0);
+    task2Count_.store(0);
+
+    // Test the user's specific scenario: 2400ms and 1-minute intervals
+    auto token1 = scheduler_->scheduleInterval(
+        std::chrono::milliseconds(2400), // 2.4 seconds
+        [this]() -> Task<void>
+        {
+            task1Count_.fetch_add(1);
+            co_return;
+        });
+
+    auto token2 = scheduler_->scheduleInterval(
+        std::chrono::minutes(1), // 60 seconds
+        [this]() -> Task<void>
+        {
+            task2Count_.fetch_add(1);
+            co_return;
+        });
+
+    // Run for 5 seconds - this should allow the 2400ms task to execute ~2 times
+    // The 1-minute task should execute once (immediately)
+    auto startTime = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - startTime < std::chrono::seconds(5))
+    {
+        scheduler_->runExpiredTasks();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200)); // User's calling pattern
+    }
+
+    token1.cancel();
+    token2.cancel();
+
+    // The 2400ms task should execute at least once (immediately) and potentially twice
+    EXPECT_GE(task1Count_.load(), 1);
+
+    // The 1-minute task should execute once (immediately, then not again for 60 seconds)
+    EXPECT_EQ(task2Count_.load(), 1);
+}
+
+TEST_F(IntervalTaskSchedulerTests, MultipleIntervalTasksImmediateExecution)
+{
+    task1Count_.store(0);
+    task2Count_.store(0);
+
+    // Test that both tasks execute immediately when scheduled with the same timing
+    auto token1 = scheduler_->scheduleInterval(
+        std::chrono::milliseconds(1000),
+        [this]() -> Task<void>
+        {
+            task1Count_.fetch_add(1);
+            co_return;
+        });
+
+    auto token2 = scheduler_->scheduleInterval(
+        std::chrono::milliseconds(2000),
+        [this]() -> Task<void>
+        {
+            task2Count_.fetch_add(1);
+            co_return;
+        });
+
+    // Call runExpiredTasks once - both should execute immediately
+    scheduler_->runExpiredTasks();
+
+    token1.cancel();
+    token2.cancel();
+
+    // Both tasks should have executed once immediately
+    EXPECT_EQ(task1Count_.load(), 1);
+    EXPECT_EQ(task2Count_.load(), 1);
 }
 
 //

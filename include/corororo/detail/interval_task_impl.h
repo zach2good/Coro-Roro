@@ -21,9 +21,6 @@ inline IntervalTask::IntervalTask(Scheduler*                                    
 , scheduler_(scheduler)
 , isOneTime_(isOneTime)
 {
-    // Add a small offset to ensure unique execution times for tasks created at the same time
-    static std::atomic<int> counter{ 0 };
-    nextExecution_ += std::chrono::microseconds(counter.fetch_add(1) % 1000);
 }
 
 inline IntervalTask::~IntervalTask()
