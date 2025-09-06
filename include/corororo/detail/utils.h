@@ -2,8 +2,9 @@
 
 #include "enums.h"
 #include "forward_declarations.h"
+#include "scheduler_concept.h"
+#include "task_aliases.h"
 #include "task_base.h"
-
 
 #include <coroutine>
 
@@ -13,78 +14,48 @@ namespace detail
 {
 
 //
-// Dummy Scheduler for Inline Execution
+// Inline Task Execution
 //
 
-// Dummy scheduler implementation for inline execution of Task<void> only
-class DummyScheduler
+template <typename T, ThreadAffinity Affinity>
+inline auto runTaskInline(detail::TaskBase<Affinity, T>&& task)
 {
-public:
-    DummyScheduler()  = default;
-    ~DummyScheduler() = default;
-
-    void notifyTaskComplete()
+    // Check if the task is already complete
+    if (!task.handle_ || task.handle_.done())
     {
-    }
-
-    // Only handle Main affinity tasks since we only support Task<void>
-    FORCE_INLINE HOT_PATH void scheduleHandleWithAffinity(std::coroutine_handle<> handle) noexcept
-    {
-        // Store the scheduled task to be returned by getNextTaskWithAffinity
-        if (handle && !handle.done())
+        // Task is already complete or invalid
+        if constexpr (!std::is_void_v<T>)
         {
-            scheduledTask_ = handle;
+            return T{}; // Return default value for non-void types
+        }
+        else
+        {
+            return; // For void, just return
         }
     }
 
-    std::coroutine_handle<> getNextTaskWithAffinity()
-    {
-        // Return the scheduled task if we have one, otherwise return noop
-        auto task      = scheduledTask_;
-        scheduledTask_ = nullptr;
-        return task ? task : std::noop_coroutine();
-    }
-
-    // Get a Scheduler* for promise compatibility
-    Scheduler* asSchedulerPtr()
-    {
-        return reinterpret_cast<Scheduler*>(this);
-    }
-
-private:
-    std::coroutine_handle<> scheduledTask_ = nullptr;
-};
-
-//
-// Utility Functions
-//
-
-// Run a coroutine inline to completion without requiring a scheduler.
-// This function works with Task<T> for any type T (Main affinity) and blocks until completion.
-// AsyncTask types are not supported to keep the implementation simple.
-// Returns the result of the coroutine (void for Task<void>, T for Task<T>).
-
-template <typename T>
-inline auto runCoroutineInline(Task<T>&& task)
-{
     // Take ownership of the coroutine handle
     auto handle  = task.handle_;
     task.handle_ = nullptr; // Prevent destruction
 
-    // Create a dummy scheduler to satisfy the FinalAwaiter
-    DummyScheduler dummyScheduler;
+    // Create inline scheduler that forces main thread execution
+    detail::InlineScheduler inlineScheduler;
 
-    // Set the scheduler on the promise
-    auto& promise      = handle.promise();
-    promise.scheduler_ = dummyScheduler.asSchedulerPtr();
+    // Use concept-based type safety to set the scheduler
+    auto& promise = handle.promise();
+    // Both Scheduler and InlineScheduler satisfy SchedulerLike concept,
+    // so we can safely cast between them at runtime
+    static_assert(detail::SchedulerLike<detail::InlineScheduler>, "InlineScheduler must satisfy SchedulerLike concept");
+    static_assert(detail::SchedulerLike<Scheduler>, "Scheduler must satisfy SchedulerLike concept");
+    promise.scheduler_ = reinterpret_cast<Scheduler*>(&inlineScheduler);
 
-    // Simply resume the coroutine - the DummyScheduler will handle any scheduled tasks inline
+    // Execute the coroutine inline
     handle.resume();
 
     // Extract and return the result
     if constexpr (std::is_void_v<T>)
     {
-        // For void tasks, just clean up and return
+        // For void tasks, just clean up
         if (handle)
         {
             handle.destroy();
@@ -93,15 +64,17 @@ inline auto runCoroutineInline(Task<T>&& task)
     else
     {
         // For non-void tasks, extract the result before cleanup
-        T result = std::move(handle.promise().result());
-
-        // Clean up the coroutine handle
-        if (handle)
+        if (handle && handle.done())
         {
+            T result = std::move(handle.promise().result());
             handle.destroy();
+            return result;
         }
-
-        return result;
+        else
+        {
+            // Task didn't complete, return default
+            return T{};
+        }
     }
 }
 

@@ -26,9 +26,10 @@ namespace detail
 template <typename Derived, ThreadAffinity Affinity, typename T>
 struct PromiseBase
 {
+    using DerivedPromise = Derived;
+
     Scheduler*          scheduler_{ nullptr };
     ContinuationVariant continuation_{};
-    bool                isIntervalTask_{ false };
 
     static constexpr ThreadAffinity affinity = Affinity;
 
@@ -49,19 +50,12 @@ struct PromiseBase
         return FinalAwaiter<Affinity, PromiseBase>{ this };
     }
 
-    COLD_PATH void unhandled_exception() noexcept
+    COLD_PATH void unhandled_exception()
     {
-        coro_log("!!! Unhandled exception !!!");
-        if (isIntervalTask_)
-        {
-            coro_log("Exception in interval task - continuing execution");
-        }
-        else
-        {
-            coro_log("Exception in regular task - terminating");
-            std::terminate();
-        }
+        // This should never be called - derived classes should override this
+        std::terminate();
     }
+
 
     //
     // await_transform
@@ -119,14 +113,28 @@ struct PromiseBase
                 return TransferPolicy<Affinity, NextAffinity>::transfer(scheduler_, handle_);
             }
 
-            FORCE_INLINE auto await_resume() const noexcept
+            FORCE_INLINE auto await_resume() const
             {
+                // Check if the child coroutine had an unhandled exception
+                auto& result = handle_.promise().result_;
+                if (std::holds_alternative<std::exception_ptr>(result))
+                {
+                    // Re-throw the exception to propagate it up the chain
+                    std::rethrow_exception(std::get<std::exception_ptr>(result));
+                }
+
                 if constexpr (!std::is_void_v<NextT>)
                 {
                     return handle_.promise().result();
                 }
+                else
+                {
+                    // For void tasks, still call result() to check for exceptions
+                    handle_.promise().result();
+                }
             }
         };
+        // Type safety guaranteed by concept constraints in scheduler_concept.h
         return TransferAwaiter{ scheduler_, std::move(nextTask) };
     }
 
@@ -144,26 +152,40 @@ struct PromiseBase
 template <ThreadAffinity Affinity, typename T>
 struct Promise final : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 {
-    T value_{};
+    std::variant<T, std::exception_ptr> result_;
 
     FORCE_INLINE void return_value(T&& value) noexcept(std::is_nothrow_move_assignable_v<T>)
     {
-        value_ = std::move(value);
+        result_ = std::move(value);
     }
 
     FORCE_INLINE void return_value(const T& value) noexcept(std::is_nothrow_copy_assignable_v<T>)
     {
-        value_ = value;
+        result_ = value;
     }
 
-    FORCE_INLINE auto result() noexcept -> T&
+    FORCE_INLINE void unhandled_exception()
     {
-        return value_;
+        // Store the exception for later propagation
+        result_ = std::current_exception();
     }
 
-    FORCE_INLINE auto result() const noexcept -> const T&
+    FORCE_INLINE auto result() -> T&
     {
-        return value_;
+        if (std::holds_alternative<std::exception_ptr>(result_))
+        {
+            std::rethrow_exception(std::get<std::exception_ptr>(result_));
+        }
+        return std::get<T>(result_);
+    }
+
+    FORCE_INLINE auto result() const -> const T&
+    {
+        if (std::holds_alternative<std::exception_ptr>(result_))
+        {
+            std::rethrow_exception(std::get<std::exception_ptr>(result_));
+        }
+        return std::get<T>(result_);
     }
 };
 
@@ -174,8 +196,25 @@ struct Promise final : public PromiseBase<Promise<Affinity, T>, Affinity, T>
 template <ThreadAffinity Affinity>
 struct Promise<Affinity, void> final : public PromiseBase<Promise<Affinity, void>, Affinity, void>
 {
+    std::variant<std::monostate, std::exception_ptr> result_;
+
     FORCE_INLINE void return_void() noexcept
     {
+        result_ = std::monostate{};
+    }
+
+    FORCE_INLINE void unhandled_exception()
+    {
+        // Store the exception for later propagation
+        result_ = std::current_exception();
+    }
+
+    FORCE_INLINE void result()
+    {
+        if (std::holds_alternative<std::exception_ptr>(result_))
+        {
+            std::rethrow_exception(std::get<std::exception_ptr>(result_));
+        }
     }
 };
 

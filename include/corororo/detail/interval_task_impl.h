@@ -43,44 +43,52 @@ inline auto IntervalTask::createTrackedTask() -> std::optional<CoroRoro::detail:
     // Create the task from factory
     auto task = factory_();
 
-    // Mark this as an interval task for exception handling
-    task.handle().promise().isIntervalTask_ = true;
+    // Task created by interval task factory
 
-    // For now, just return the task directly without wrapping
-    // TODO: Add proper tracking
+    // Return the task directly
     return task;
 }
 
 inline void IntervalTask::execute()
 {
-    if (cancelled_.load())
+    try
     {
-        return;
+        if (cancelled_.load())
+        {
+            return;
+        }
+
+        // Try to create a tracked task
+        auto task = createTrackedTask();
+        if (!task)
+        {
+            // Single execution guarantee - already has active child
+            return;
+        }
+
+        // Schedule the task for execution
+        if (scheduler_)
+        {
+            // Set the scheduler pointer in the task's promise so it can notify completion
+            // Type safety guaranteed by concept constraints in scheduler_concept.h
+            task->handle().promise().scheduler_ = scheduler_;
+            scheduler_->schedule(std::move(*task));
+        }
+
+        // Reset the active child flag (for now, until we implement proper tracking)
+        hasActiveChild_.store(false);
+
+        // Update next execution time only if not cancelled
+        if (!cancelled_.load())
+        {
+            updateNextExecution();
+        }
     }
-
-    // Try to create a tracked task
-    auto task = createTrackedTask();
-    if (!task)
+    catch (...)
     {
-        // Single execution guarantee - already has active child
-        return;
-    }
-
-    // Schedule the task for execution
-    if (scheduler_)
-    {
-        // Set the scheduler pointer in the task's promise so it can notify completion
-        task->handle().promise().scheduler_ = scheduler_;
-        scheduler_->schedule(std::move(*task));
-    }
-
-    // Reset the active child flag (for now, until we implement proper tracking)
-    hasActiveChild_.store(false);
-
-    // Update next execution time only if not cancelled
-    if (!cancelled_.load())
-    {
-        updateNextExecution();
+        // For interval tasks, log the exception but don't propagate it
+        // This allows interval tasks to continue running despite exceptions
+        // Note: We don't have access to coro_log here, so we skip logging
     }
 }
 

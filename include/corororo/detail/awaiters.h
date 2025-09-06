@@ -61,11 +61,23 @@ struct FinalAwaiter final
                 if constexpr (std::is_same_v<TContinuation, std::monostate>)
                 {
                     // This was a top-level task. It has finished.
+                    // Check if the coroutine completed with an exception
+                    // Cast to derived promise type to access result_
+                    auto* derivedPromise = static_cast<typename Promise::DerivedPromise*>(promise_);
+                    if (std::holds_alternative<std::exception_ptr>(derivedPromise->result_))
+                    {
+                        // Always re-throw exceptions for natural propagation
+                        // The scheduler will catch and handle them appropriately
+                        std::rethrow_exception(std::get<std::exception_ptr>(derivedPromise->result_));
+                    }
+
+                    // Type safety guaranteed by concept constraints in scheduler_concept.h
+                    // Both Scheduler and InlineScheduler satisfy the SchedulerLike concept
                     promise_->scheduler_->notifyTaskComplete();
 
                     // Symmetric Transfer on Task Completion:
                     // No continuation exists (a top-level task). Ask the scheduler for the next
-                    // available task for this thread to execute immediately.
+                    // available task for the thread to execute immediately.
                     return promise_->scheduler_->template getNextTaskWithAffinity<Affinity>();
                 }
                 else

@@ -37,6 +37,8 @@ add_executable(corororo_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/callable_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/interval_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/landsandboat_simulation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/dummy_scheduler_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/exception_tests.cpp
 )
 
 target_include_directories(corororo_tests PRIVATE

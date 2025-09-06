@@ -78,13 +78,19 @@ struct NO_DISCARD TaskBase final
     }
 
     template <typename U = T>
-    NO_DISCARD auto result() noexcept -> std::enable_if_t<!std::is_void_v<U>, U&>
+    NO_DISCARD auto result() -> std::enable_if_t<!std::is_void_v<U>, U&>
     {
         return handle_.promise().result();
     }
 
     template <typename U = T>
-    NO_DISCARD auto result() const noexcept -> std::enable_if_t<!std::is_void_v<U>, const U&>
+    NO_DISCARD auto result() const -> std::enable_if_t<!std::is_void_v<U>, const U&>
+    {
+        return handle_.promise().result();
+    }
+
+    template <typename U = T>
+    NO_DISCARD auto result() -> std::enable_if_t<std::is_void_v<U>>
     {
         return handle_.promise().result();
     }
@@ -105,11 +111,16 @@ struct NO_DISCARD TaskBase final
         // return handle_;
     }
 
-    auto await_resume() const noexcept
+    auto await_resume() const
     {
         if constexpr (!std::is_void_v<T>)
         {
             return result();
+        }
+        else
+        {
+            // For void tasks, check if there's an exception to throw
+            result();
         }
     }
 

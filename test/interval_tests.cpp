@@ -142,7 +142,7 @@ TEST_F(IntervalTaskSchedulerTests, ScheduleDelayedBasic)
 
     auto token = scheduler_->scheduleDelayed(
         std::chrono::milliseconds(100),
-        [this]() -> Task<void>
+        []() -> Task<void>
         {
             executed_.store(true);
             co_return;
@@ -167,7 +167,7 @@ TEST_F(IntervalTaskSchedulerTests, ScheduleAtBasic)
 
     auto token = scheduler_->scheduleAt(
         executionTime,
-        [this]() -> Task<void>
+        []() -> Task<void>
         {
             executed_.store(true);
             co_return;
@@ -510,44 +510,6 @@ TEST_F(IntervalTaskSchedulerTests, MultipleIntervalTasksImmediateExecution)
     EXPECT_EQ(task1Count_.load(), 1);
     EXPECT_EQ(task2Count_.load(), 1);
 }
-
-//
-// Error Handling Tests
-//
-
-TEST_F(IntervalTaskSchedulerTests, IntervalTaskWithException)
-{
-    executionCount_.store(0);
-
-    auto token = scheduler_->scheduleInterval(
-        std::chrono::milliseconds(50),
-        [this]() -> Task<void>
-        {
-            executionCount_.fetch_add(1);
-            if (executionCount_.load() == 2)
-            {
-                throw std::runtime_error("Test exception");
-            }
-            co_return;
-        });
-
-    // Run for 200ms
-    auto startTime = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - startTime < std::chrono::milliseconds(200))
-    {
-        scheduler_->runExpiredTasks();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    token.cancel();
-
-    // Should have executed at least once before exception
-    EXPECT_GE(executionCount_.load(), 1);
-}
-
-//
-// Performance Tests
-//
 
 TEST_F(IntervalTaskSchedulerTests, HighFrequencyIntervalTasks)
 {
